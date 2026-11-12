@@ -268,6 +268,21 @@ class OpenStackBackend:
 
     def import_target(self, target: Target, name: str) -> ManagedImage:
         method = self.choose_method(target)
+        try:
+            return self._import_with(target, name, method)
+        except HashMismatch:
+            raise
+        except BackendError as e:
+            if not (self.import_method == AUTO and method == WEB_DOWNLOAD):
+                raise
+            # A cloud may advertise web-download and still fail it at the store (seen on
+            # Infomaniak: "Glance import failed (stores: swift)"). In auto mode, fall back to
+            # a streaming upload, and keep to it for the rest of the run.
+            log.warning("%s: web-download failed (%s), falling back to upload", target.label, e)
+            self._methods = [m for m in self._available_methods() if m != WEB_DOWNLOAD]
+            return self._import_with(target, name, UPLOAD)
+
+    def _import_with(self, target: Target, name: str, method: str) -> ManagedImage:
         log.info("%s: importing with %s", target.label, method)
         created = self.glance.create_image(self.create_body(target, name))
         image_id = created["id"]

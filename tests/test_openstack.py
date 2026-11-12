@@ -160,8 +160,22 @@ def test_web_download_failure_deletes_image(glance, make_backend, targets):
     glance.import_methods = ["web-download"]
     glance.web_download_fails = True
     with pytest.raises(BackendError, match="import failed"):
-        make_backend().import_target(targets["debian-13"], "n")
+        make_backend(import_method="web-download").import_target(targets["debian-13"], "n")
     assert glance.images == {}
+
+
+def test_auto_falls_back_to_upload_when_web_download_fails(glance, make_backend, targets):
+    glance.import_methods = ["web-download"]
+    glance.web_download_fails = True
+    backend = make_backend()
+    first = backend.import_target(targets["debian-13"], "n")
+    assert first.id in glance.images
+    assert glance.images[first.id]["status"] == "active"
+    assert len(glance.images) == 1  # the failed web-download image was removed
+    # The rest of the run keeps to upload: no second web-download attempt.
+    imports_before = sum(1 for c in glance.calls if c[1].endswith("/import"))
+    assert backend.choose_method(targets["debian-13"]) == "upload"
+    assert sum(1 for c in glance.calls if c[1].endswith("/import")) == imports_before
 
 
 def test_web_download_unverifiable_hash_is_refused(glance, make_backend, targets):
@@ -250,7 +264,9 @@ def test_import_timeout(glance, make_backend, targets):
 
     glance.post = post_but_never_finish
     ticks = iter(range(0, 10_000, 100))
-    backend = make_backend(import_timeout=300, clock=lambda: next(ticks))
+    backend = make_backend(
+        import_method="web-download", import_timeout=300, clock=lambda: next(ticks)
+    )
     with pytest.raises(BackendError, match="not active after 300s"):
         backend.import_target(target, "n")
     assert glance.images == {}
