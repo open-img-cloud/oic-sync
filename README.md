@@ -1,4 +1,24 @@
-# oic-sync
+<p align="center">
+  <a href="https://openimages.cloud">
+    <img src="https://openimages.cloud/img/og.png" alt="openimages.cloud: signed, boot-tested cloud images for OpenStack and Proxmox" width="720">
+  </a>
+</p>
+
+<h1 align="center">oic-sync</h1>
+
+<p align="center">
+  <a href="https://github.com/open-img-cloud/oic-sync/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/open-img-cloud/oic-sync/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://openimages.cloud/verify/"><img alt="Verifies Sigstore cosign signatures" src="https://img.shields.io/badge/verifies-Sigstore%20cosign-2459c4"></a>
+  <a href="LICENSE"><img alt="License Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-555"></a>
+</p>
+
+<p align="center">
+  <a href="https://openimages.cloud"><b>Website</b></a> ·
+  <a href="https://openimages.cloud/images/">Catalog</a> ·
+  <a href="https://images.openimages.cloud/index.json">index.json</a> ·
+  <a href="https://github.com/open-img-cloud/docs/blob/main/docs/oic-sync.md">Documentation</a> ·
+  <a href="https://github.com/open-img-cloud/oic-sync/issues">Report an issue</a>
+</p>
 
 Keep the signed cloud images of [openimages.cloud](https://openimages.cloud) in sync with your
 OpenStack Glance.
