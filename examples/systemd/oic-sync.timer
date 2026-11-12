@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily sync of openimages.cloud images
+
+[Timer]
+# The catalog index is rebuilt once a day; any time after 08:00 UTC is fine.
+OnCalendar=*-*-* 09:00:00 UTC
+RandomizedDelaySec=1h
+Persistent=yes
+
+[Install]
+WantedBy=timers.target

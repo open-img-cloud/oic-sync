@@ -1,0 +1,65 @@
+# Daily sync of openimages.cloud images into OpenStack Glance.
+#
+#   kubectl create namespace oic-sync
+#   kubectl -n oic-sync create secret generic oic-sync-clouds --from-file=clouds.yaml
+#   kubectl -n oic-sync apply -f cronjob.yaml
+#
+# Use an application credential in clouds.yaml, restricted to what oic-sync needs.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oic-sync
+  namespace: oic-sync
+spec:
+  schedule: "0 9 * * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 14400
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: oic-sync
+              # Pin a released version (and verify it with cosign, see the README).
+              image: ghcr.io/open-img-cloud/oic-sync:0.1.0
+              args:
+                - openstack
+                - sync
+                - --cloud=mycloud
+                - --image=debian-13
+                - --image=ubuntu-24.04
+                - --keep=2
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: clouds
+                  mountPath: /etc/openstack
+                  readOnly: true
+                - name: home
+                  mountPath: /home/oic
+          volumes:
+            - name: clouds
+              secret:
+                secretName: oic-sync-clouds
+            - name: home
+              emptyDir: {}

@@ -1,0 +1,31 @@
+# Daily sync of openimages.cloud images into OpenStack Glance.
+# Install: pipx install oic-sync (as root, or adjust ExecStart), put clouds.yaml in
+# /etc/openstack/clouds.yaml (readable by the oic-sync user), then:
+#   systemctl enable --now oic-sync.timer
+[Unit]
+Description=Sync openimages.cloud images into OpenStack Glance
+Documentation=https://github.com/open-img-cloud/oic-sync
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+# Sigstore trust root cache (~/.cache/sigstore).
+CacheDirectory=oic-sync
+Environment=HOME=/var/cache/oic-sync
+Environment=OS_CLOUD=mycloud
+ExecStart=/usr/local/bin/oic-sync openstack sync --image debian-13 --image ubuntu-24.04 --keep 2
+# Hardening: oic-sync only needs outbound HTTPS.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
