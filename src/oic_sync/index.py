@@ -21,7 +21,7 @@ SCHEMA = "oic-index/v1"
 
 # Service images (Octavia amphora, Manila service VM) are owned by an OpenStack service and
 # imported with that service's procedure. They are only synced when named with --image.
-SERVICE_IMAGES = frozenset({"octavia-amphora", "manila-service-image", "trove-guest-image"})
+SERVICE_IMAGES = frozenset({"octavia-amphora", "manila-service-image", "trove-guest-image", "cirros"})
 
 # Index size cap: the real index is around 60 KiB.
 MAX_INDEX_BYTES = 16 * 1024 * 1024

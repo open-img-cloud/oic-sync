@@ -66,7 +66,7 @@ oic-sync openstack sync --cloud admin --visibility public --keep 3 --delete
 
 | Option | Meaning |
 |---|---|
-| `--image ID` | image to handle, repeatable (default: every image of the index except the service images `octavia-amphora`, `manila-service-image` and `trove-guest-image`) |
+| `--image ID` | image to handle, repeatable (default: every image of the index except the service images `octavia-amphora`, `manila-service-image` and `trove-guest-image` and the test image `cirros`) |
 | `--variant NAME` | only this variant of multi-variant images (`--variant uefi` for Alpine) |
 | `--keep N` | versions kept per image, the current one included (default 2) |
 | `--delete` | delete versions beyond `--keep`, only when no instance and no volume uses them |
