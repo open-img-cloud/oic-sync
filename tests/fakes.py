@@ -1,15 +1,19 @@
-"""Fakes for Glance, Nova, Cinder and the CDN. No test talks to a real service."""
+"""Fakes for Glance, Nova, Cinder, Proxmox VE (pvesh) and the CDN. No test talks to a real
+service."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+
+from oic_sync.backends.base import BackendError
 
 PROJECT = "p-123"
 BASE = "https://images.example.test"
@@ -345,3 +349,239 @@ class FakeUsageApi:
         return FakeResponse(200, {self.key: items})
 
     post = put = patch = delete = None  # type: ignore[assignment]
+
+
+def pve_description(meta: dict[str, str], text: str = "Managed by oic-sync.") -> str:
+    lines = "\n".join(f"{k}={v}" for k, v in meta.items())
+    return f"{text}\n\n```oic-sync\n{lines}\n```"
+
+
+@dataclass
+class FakePve:
+    """In-memory Proxmox VE API behind the PveApi interface (what pvesh would return).
+
+    fail: steps whose worker task ends in error: create, download, disk, template, destroy;
+    "resources" makes /cluster/resources fail (usage check).
+    """
+
+    node: str = "pve"
+    nodes: list[str] = field(default_factory=lambda: ["pve"])
+    remote: dict[str, bytes] = field(default_factory=dict)  # what download-url fetches
+    vms: dict[int, dict[str, Any]] = field(default_factory=dict)
+    vm_node: dict[int, str] = field(default_factory=dict)
+    storage: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
+    fail: set[str] = field(default_factory=set)
+    nextid_override: int | None = None
+    running_polls: int = 1
+
+    # -- helpers for tests ---------------------------------------------------------------
+
+    def add_vm(self, vmid: int, node: str | None = None, **config: Any) -> dict[str, Any]:
+        self.vms[vmid] = {"digest": f"d{vmid}", **config}
+        self.vm_node[vmid] = node or self.node
+        return self.vms[vmid]
+
+    def add_template(
+        self,
+        vmid: int,
+        image_id: str,
+        version: str,
+        sha: str,
+        *,
+        name: str,
+        retired: bool = False,
+        variant: str | None = None,
+        imported_at: str = "2026-11-01T00:00:00Z",
+        template: bool = True,
+        lock: str | None = None,
+        import_file: str | None = None,
+    ) -> dict[str, Any]:
+        meta = {"oic_id": image_id}
+        if variant:
+            meta["oic_variant"] = variant
+        meta.update(version=version, sha256=sha, imported_at=imported_at)
+        if import_file:
+            meta["import_file"] = import_file
+        tags = ["oic", f"oic-{image_id}"] + (["oic-retired"] if retired else [])
+        config: dict[str, Any] = {
+            "name": name,
+            "tags": ";".join(tags),
+            "description": pve_description(meta),
+            "scsi0": f"local-lvm:{'base' if template else 'vm'}-{vmid}-disk-0,size=3G",
+        }
+        if template:
+            config["template"] = 1
+        if lock:
+            config["lock"] = lock
+        return self.add_vm(vmid, **config)
+
+    def writes(self) -> list[tuple[str, str, dict[str, Any]]]:
+        return [c for c in self.calls if c[0] != "get"]
+
+    def files(self, storage: str = "local") -> list[str]:
+        return sorted(self.storage.get(storage, {}))
+
+    def _task(self, kind: str, ident: Any, ok: bool = True, error: str = "") -> str:
+        ident = re.sub(r"[:/]", "-", str(ident))
+        upid = f"UPID:{self.node}:{len(self.tasks):08X}:00000000:00000000:{kind}:{ident}:root@pam:"
+        self.tasks[upid] = {"ok": ok, "error": error or f"{kind} failed", "polls": 0}
+        return upid
+
+    def _vm(self, vmid: int) -> dict[str, Any]:
+        if vmid not in self.vms:
+            raise BackendError(f"Configuration file 'nodes/pve/qemu-server/{vmid}.conf' missing")
+        return self.vms[vmid]
+
+    # -- PveApi --------------------------------------------------------------------------
+
+    def call(self, method: str, path: str, params: dict[str, Any] | None = None) -> Any:
+        params = dict(params or {})
+        self.calls.append((method, path, dict(params)))
+        node = f"/nodes/{self.node}"
+
+        if method == "get" and path == "/nodes":
+            return [{"node": n, "status": "online"} for n in self.nodes]
+        if method == "get" and path == "/cluster/nextid":
+            if "vmid" in params:
+                if int(params["vmid"]) in self.vms:
+                    raise BackendError(f"VM {params['vmid']} already exists")
+                return str(params["vmid"])
+            if self.nextid_override is not None:
+                return str(self.nextid_override)
+            n = 100
+            while n in self.vms:
+                n += 1
+            return str(n)
+        if method == "get" and path == "/cluster/resources":
+            if "resources" in self.fail:
+                raise BackendError("permission denied")
+            return [
+                {
+                    "id": f"qemu/{v}",
+                    "type": "qemu",
+                    "vmid": v,
+                    "node": self.vm_node.get(v, self.node),
+                    "template": cfg.get("template", 0),
+                }
+                for v, cfg in self.vms.items()
+            ]
+        if method == "get" and path == f"{node}/qemu":
+            return [
+                {
+                    "vmid": v,
+                    "name": cfg.get("name"),
+                    "status": "stopped",
+                    **{k: cfg[k] for k in ("tags", "template", "lock") if k in cfg},
+                }
+                for v, cfg in self.vms.items()
+                if self.vm_node.get(v, self.node) == self.node
+            ]
+        if method == "create" and path == f"{node}/qemu":
+            vmid = int(params.pop("vmid"))
+            if vmid in self.vms:
+                raise BackendError(f"unable to create VM {vmid}: config file already exists")
+            config = {**params, "meta": "creation-qemu=10.0.2,ctime=1762900000"}
+            if "efidisk0" in config:
+                config["efidisk0"] = f"local-lvm:vm-{vmid}-disk-1,efitype=4m,size=4M"
+            self.add_vm(vmid, **config)
+            if "create" in self.fail:
+                config["lock"] = "create"
+                return self._task("qmcreate", vmid, ok=False, error="unable to create VM")
+            return self._task("qmcreate", vmid)
+        m = re.fullmatch(r"/nodes/([^/]+)/qemu/(\d+)/config", path)
+        if m:
+            vmid = int(m.group(2))
+            cfg = self._vm(vmid)
+            if method == "get":
+                return copy.deepcopy(cfg)
+            if cfg.get("lock") and not params.get("skiplock"):
+                raise BackendError(f"VM is locked ({cfg['lock']})")
+            if method == "set":
+                cfg.update(params)
+                return None
+            # create (POST, asynchronous): disk import and cloud-init drive
+            source = re.search(r"import-from=([^,]+)", params.get("scsi0", ""))
+            if source:
+                volid = source.group(1)
+                st, _, _ = volid.partition(":")
+                if volid not in self.storage.get(st, {}):
+                    return self._task("qmconfig", vmid, ok=False, error=f"no such volume {volid}")
+                if "disk" in self.fail:
+                    params.pop("scsi0")
+                    cfg.update(params)
+                    return self._task("qmconfig", vmid, ok=False, error="import failed")
+                params["scsi0"] = f"local-lvm:vm-{vmid}-disk-0,discard=on,size=3G"
+            if "ide2" in params:
+                params["ide2"] = f"local-lvm:vm-{vmid}-cloudinit,media=cdrom"
+            cfg.update(params)
+            return self._task("qmconfig", vmid)
+        m = re.fullmatch(r"/nodes/([^/]+)/qemu/(\d+)/template", path)
+        if m and method == "create":
+            vmid = int(m.group(2))
+            cfg = self._vm(vmid)
+            if "template" in self.fail:
+                return self._task("qmtemplate", vmid, ok=False, error="convert failed")
+            for k, v in list(cfg.items()):
+                if isinstance(v, str):
+                    cfg[k] = v.replace(f"vm-{vmid}-disk", f"base-{vmid}-disk")
+            cfg["template"] = 1
+            return self._task("qmtemplate", vmid)
+        m = re.fullmatch(r"/nodes/([^/]+)/qemu/(\d+)", path)
+        if m and method == "delete":
+            vmid = int(m.group(2))
+            cfg = self._vm(vmid)
+            if cfg.get("lock") and not params.get("skiplock"):
+                return self._task(
+                    "qmdestroy", vmid, ok=False, error=f"VM is locked ({cfg['lock']})"
+                )
+            if "destroy" in self.fail:
+                return self._task("qmdestroy", vmid, ok=False, error="destroy failed")
+            del self.vms[vmid]
+            return self._task("qmdestroy", vmid)
+        m = re.fullmatch(r"/nodes/([^/]+)/storage/([^/]+)/download-url", path)
+        if m and method == "create":
+            st = m.group(2)
+            assert params["content"] == "import"
+            assert params["checksum-algorithm"] == "sha256"
+            data = self.remote.get(params["url"])
+            if "download" in self.fail or data is None:
+                return self._task("download", st, ok=False, error="download failed")
+            if sha256(data) != params["checksum"]:
+                return self._task("download", st, ok=False, error="checksum mismatch")
+            volid = f"{st}:import/{params['filename']}"
+            self.storage.setdefault(st, {})[volid] = {
+                "volid": volid,
+                "format": "qcow2",
+                "size": len(data),
+                "content": "import",
+            }
+            return self._task("download", st)
+        m = re.fullmatch(r"/nodes/([^/]+)/storage/([^/]+)/content(?:/(.+))?", path)
+        if m:
+            st, volid = m.group(2), m.group(3)
+            items = self.storage.setdefault(st, {})
+            if method == "get" and volid is None:
+                wanted = params.get("content")
+                return [
+                    copy.deepcopy(i) for i in items.values() if not wanted or i["content"] == wanted
+                ]
+            if method == "delete" and volid:
+                if items.pop(volid, None) is None:
+                    raise BackendError(f"volume {volid} does not exist")
+                return None if params.get("delay") else self._task("imgdel", volid)
+        m = re.fullmatch(r"/nodes/([^/]+)/tasks/([^/]+)/(status|log)", path)
+        if m and method == "get":
+            task = self.tasks[m.group(2)]
+            if m.group(3) == "log":
+                return [{"n": 1, "t": "starting"}, {"n": 2, "t": f"TASK ERROR: {task['error']}"}]
+            task["polls"] += 1
+            if task["polls"] <= self.running_polls:
+                return {"status": "running", "upid": m.group(2)}
+            return {
+                "status": "stopped",
+                "upid": m.group(2),
+                "exitstatus": "OK" if task["ok"] else task["error"],
+            }
+        raise AssertionError(f"unexpected pvesh call {method} {path} {params}")

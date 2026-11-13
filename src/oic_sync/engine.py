@@ -20,6 +20,7 @@ import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Protocol
 
 from oic_sync.backends.base import FAILED, TRANSIENT, Backend, BackendError, ManagedImage
 from oic_sync.hashing import HashMismatch
@@ -51,6 +52,37 @@ def versioned_name(stable: str, version: str, sha256: str | None = None) -> str:
     return f"{stable} ({version})"
 
 
+class Naming(Protocol):
+    """How a platform names the image holding the stable name and the retired versions.
+
+    A backend may expose its own as a `naming` attribute (Proxmox VE needs DNS names);
+    otherwise the engine uses GlanceNaming.
+    """
+
+    def stable(self, target: Target) -> str: ...
+
+    def versioned(self, target: Target, version: str, sha256: str | None = None) -> str: ...
+
+
+class GlanceNaming:
+    """The current version is "Debian 13", older ones "Debian 13 (13-20261026-2643)"."""
+
+    def stable(self, target: Target) -> str:
+        return target.stable_name
+
+    def versioned(self, target: Target, version: str, sha256: str | None = None) -> str:
+        return versioned_name(target.stable_name, version, sha256)
+
+
+DEFAULT_NAMING: Naming = GlanceNaming()
+
+
+def naming_of(backend: object) -> Naming:
+    """The naming scheme of a backend: its `naming` attribute, else the Glance one."""
+    naming = getattr(backend, "naming", None)
+    return naming if naming is not None else DEFAULT_NAMING
+
+
 @dataclass(frozen=True)
 class Action:
     kind: str
@@ -79,16 +111,19 @@ class Plan:
     older: list[ManagedImage]
     actions: list[Action]
     notes: list[str] = field(default_factory=list)
+    stable_name: str = ""
 
     def has(self, kind: str) -> bool:
         return any(a.kind == kind for a in self.actions)
 
 
-def _retire_name(target: Target, image: ManagedImage, others: Iterable[ManagedImage]) -> str:
+def _retire_name(
+    target: Target, image: ManagedImage, others: Iterable[ManagedImage], naming: Naming
+) -> str:
     clash = image.version == target.artifact.version or any(
         o.id != image.id and o.version == image.version and o.sha256 != image.sha256 for o in others
     )
-    return versioned_name(target.stable_name, image.version, image.sha256 if clash else None)
+    return naming.versioned(target, image.version, image.sha256 if clash else None)
 
 
 def plan_target(
@@ -99,11 +134,13 @@ def plan_target(
     delete: bool,
     now: datetime,
     stale_after: timedelta = DEFAULT_STALE_AFTER,
+    naming: Naming = DEFAULT_NAMING,
 ) -> Plan:
     """Decide what to do for one target, from the images the platform holds for it."""
     if keep < 1:
         raise ValueError("keep must be at least 1")
     sha = target.artifact.sha256
+    stable = naming.stable(target)
     actions: list[Action] = []
     notes: list[str] = []
 
@@ -120,17 +157,15 @@ def plan_target(
 
     importing_elsewhere = current is None and any(m.sha256 == sha for m in in_progress)
     if current is None and not importing_elsewhere:
-        actions.append(
-            Action(IMPORT, name=versioned_name(target.stable_name, target.artifact.version))
-        )
-    if current is not None and (current.name != target.stable_name or current.hidden):
-        actions.append(Action(PROMOTE, current, target.stable_name))
+        actions.append(Action(IMPORT, name=naming.versioned(target, target.artifact.version)))
+    if current is not None and (current.name != stable or current.hidden):
+        actions.append(Action(PROMOTE, current, stable))
 
     if importing_elsewhere:
         notes.append("an import of this version is already in progress; nothing else done")
     else:
         for rank, m in enumerate(older, start=1):
-            name = _retire_name(target, m, older)
+            name = _retire_name(target, m, older, naming)
             if m.name != name or not m.hidden:
                 actions.append(Action(RETIRE, m, name))
             if rank >= keep:  # the current version counts as the first kept one
@@ -147,7 +182,7 @@ def plan_target(
         state = OUTDATED
     else:
         state = MISSING
-    return Plan(target, state, current, older, actions, notes)
+    return Plan(target, state, current, older, actions, notes, stable_name=stable)
 
 
 @dataclass
@@ -181,6 +216,7 @@ class Engine:
         self.out = out
         self.now = now
         self.stale_after = stale_after
+        self.naming = naming_of(backend)
 
     def plan(self, target: Target) -> Plan:
         images = self.backend.list_managed(target)
@@ -191,6 +227,7 @@ class Engine:
             delete=self.delete,
             now=self.now(),
             stale_after=self.stale_after,
+            naming=self.naming,
         )
 
     def status(self, targets: Iterable[Target]) -> list[Plan]:
@@ -247,7 +284,7 @@ class Engine:
         return result
 
     def _execute(self, plan: Plan, result: TargetResult, prefix: str) -> None:
-        target = plan.target
+        stable = plan.stable_name or self.naming.stable(plan.target)
         by_kind: dict[str, list[Action]] = {}
         for a in plan.actions:
             by_kind.setdefault(a.kind, []).append(a)
@@ -258,15 +295,15 @@ class Engine:
                 self.backend.delete(a.image)
 
         for a in by_kind.get(IMPORT, []):
-            self._say(result, prefix + a.describe() + f": {target.artifact.version}")
+            self._say(result, prefix + a.describe() + f": {plan.target.artifact.version}")
             if not self.dry_run:
                 assert a.name is not None
-                new = self.backend.import_target(target, a.name)
+                new = self.backend.import_target(plan.target, a.name)
                 self._say(result, f"imported {new.id}, digests verified")
-                self.backend.rename(new, target.stable_name, hidden=False)
-                self._say(result, f"promoted {new.id} to '{target.stable_name}'")
+                self.backend.rename(new, stable, hidden=False)
+                self._say(result, f"promoted {new.id} to '{stable}'")
             else:
-                self._say(result, f"would promote it to '{target.stable_name}'")
+                self._say(result, f"would promote it to '{stable}'")
 
         for a in by_kind.get(PROMOTE, []):
             self._say(result, prefix + a.describe())
@@ -285,7 +322,9 @@ class Engine:
                 self._say(result, f"keep {a.image.id}: cannot tell whether it is in use")
                 continue
             if used:
-                self._say(result, f"keep {a.image.id}: used by an instance or a volume")
+                self._say(
+                    result, f"keep {a.image.id}: used by an instance, a volume or a linked clone"
+                )
                 continue
             self._say(result, prefix + a.describe())
             if not self.dry_run:

@@ -1,5 +1,5 @@
 # Daily sync of openimages.cloud images into OpenStack Glance.
-# Install: pipx install oic-sync (as root, or adjust ExecStart), put clouds.yaml in
+# Install: pipx install 'oic-sync[openstack]' (as root, or adjust ExecStart), put clouds.yaml in
 # /etc/openstack/clouds.yaml (readable by the oic-sync user), then:
 #   systemctl enable --now oic-sync.timer
 [Unit]
