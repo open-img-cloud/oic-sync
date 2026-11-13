@@ -1,4 +1,4 @@
-"""Platform backends. OpenStack (Glance) is implemented; Proxmox VE is planned."""
+"""Platform backends: OpenStack (Glance) and Proxmox VE (VM templates, through pvesh)."""
 
 from oic_sync.backends.base import Backend, BackendError, ManagedImage
 
