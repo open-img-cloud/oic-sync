@@ -26,6 +26,7 @@ from oic_sync.backends.proxmox import (
     ProxmoxBackend,
     ProxmoxNaming,
     Pvesh,
+    block_owner,
     dns_name,
     image_tag,
     parse_description,
@@ -246,6 +247,7 @@ def test_import_bios(targets, pve, backend):
     filename = "oic-100-debian-13-13-20261103-2651-x86_64.qcow2"
     assert meta == {
         "oic_id": "debian-13",
+        "vmid": "100",
         "version": "13-20261103-2651",
         "sha256": debian.artifact.sha256,
         "imported_at": "2026-11-13T12:00:00Z",
@@ -482,6 +484,43 @@ def test_retired_template_kept_when_a_linked_clone_uses_it(targets, pve, backend
     assert any("keep 200: used by" in line for line in lines)
     # The clone on the other node was read through its own node path.
     assert ("get", "/nodes/pve2/qemu/300/config", {}) in pve.calls
+
+
+def clone_of(pve, template_vmid: int, vmid: int, *, template: bool = False) -> None:
+    """A clone as Proxmox makes it: same tags and description, disks of its own."""
+    src = pve.vms[template_vmid]
+    cfg = {k: v for k, v in src.items() if k not in ("digest", "template", "scsi0")}
+    cfg["name"] = f"clone-{vmid}"
+    cfg["scsi0"] = f"local-lvm:base-{template_vmid}-disk-0/vm-{vmid}-disk-0,size=3G"
+    if template:
+        cfg["template"] = 1
+    pve.add_vm(vmid, **cfg)
+
+
+def test_clones_are_never_managed(targets, pve, backend):
+    """Clones copy the tags and the block: they must not look like a (stale) import."""
+    debian = targets["debian-13"]
+    pve.add_template(
+        201, "debian-13", debian.artifact.version, debian.artifact.sha256, name="debian-13"
+    )
+    clone_of(pve, 201, 300)  # running VM made from the template, days ago
+    clone_of(pve, 201, 301, template=True)  # a clone turned into a template by hand
+    assert [m.id for m in backend.list_managed(debian)] == ["201"]
+    e, lines = engine(backend, keep=1, delete=True)
+    plan = e.plan(debian)
+    assert plan.state == "up-to-date"
+    assert plan.actions == []
+    (result,) = e.sync([debian])
+    assert result.ok, lines
+    assert {300, 301} <= set(pve.vms)
+    assert not [c for c in pve.calls if c[0] in ("delete", "set")]
+
+
+def test_block_owner_falls_back_to_the_import_file():
+    assert block_owner({"vmid": "7"}) == "7"
+    assert block_owner({"import_file": "local:import/oic-9101-alpine.qcow2"}) == "9101"
+    assert block_owner({"import_file": "local:import/other.qcow2"}) is None
+    assert block_owner({}) is None
 
 
 def test_in_use(pve, backend, targets):

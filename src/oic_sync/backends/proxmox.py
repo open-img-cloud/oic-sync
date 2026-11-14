@@ -128,6 +128,17 @@ def parse_description(text: str | None) -> dict[str, str]:
     return meta
 
 
+_IMPORT_OWNER = re.compile(r"(?:^|[:/])oic-(\d+)-[^/]*$")
+
+
+def block_owner(meta: Mapping[str, str]) -> str | None:
+    """VMID the oic-sync block was written for: its vmid key, else the import file name."""
+    if meta.get("vmid"):
+        return meta["vmid"]
+    match = _IMPORT_OWNER.search(meta.get("import_file", ""))
+    return match.group(1) if match else None
+
+
 def render_description(target: Target, meta: Mapping[str, str]) -> str:
     image, artifact = target.image, target.artifact
     title = image.title + (f" ({artifact.variant})" if artifact.variant else "")
@@ -327,6 +338,11 @@ class ProxmoxBackend:
                 continue
             if (meta.get("oic_variant") or None) != target.artifact.variant:
                 continue
+            if block_owner(meta) != str(vmid):
+                # A clone of one of our templates (Proxmox copies the description and the
+                # tags), or a VM edited by hand: never ours to promote, retire or clean up.
+                log.debug("VM %s carries the block of VM %s; ignored", vmid, block_owner(meta))
+                continue
             managed.append(self._managed(vmid, cfg, meta))
         return managed
 
@@ -387,6 +403,9 @@ class ProxmoxBackend:
         if artifact.variant:
             meta["oic_variant"] = artifact.variant
         meta.update(
+            # The VMID the block was written for: a clone copies the description and the tags,
+            # and must never be taken for one of our imports (see list_managed).
+            vmid=str(vmid),
             version=artifact.version,
             sha256=artifact.sha256,
             imported_at=self.now().strftime("%Y-%m-%dT%H:%M:%SZ"),

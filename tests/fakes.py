@@ -401,7 +401,7 @@ class FakePve:
         meta = {"oic_id": image_id}
         if variant:
             meta["oic_variant"] = variant
-        meta.update(version=version, sha256=sha, imported_at=imported_at)
+        meta.update(vmid=str(vmid), version=version, sha256=sha, imported_at=imported_at)
         if import_file:
             meta["import_file"] = import_file
         tags = ["oic", f"oic-{image_id}"] + (["oic-retired"] if retired else [])
