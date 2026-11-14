@@ -429,7 +429,12 @@ def connect(
     **backend_options: Any,
 ) -> OpenStackBackend:
     """Build the backend from clouds.yaml (or OS_* variables when no cloud is named)."""
-    import openstack
+    try:
+        import openstack
+    except ImportError as e:
+        raise BackendError(
+            "the OpenStack backend needs openstacksdk: pip install 'oic-sync[openstack]'"
+        ) from e
 
     from oic_sync import __version__
 

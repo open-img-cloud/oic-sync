@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from oic_sync import __version__
+from oic_sync.backends.base import BackendError
 from oic_sync.http import make_client
 from oic_sync.index import (
     DEFAULT_INDEX_URL,
@@ -73,6 +74,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("-v", "--verbose", action="count", default=0, help="more logs")
 
+    rotation = argparse.ArgumentParser(add_help=False)
+    rotation.add_argument(
+        "--keep",
+        type=_positive,
+        default=2,
+        help="versions to keep per image, the current one included (default: %(default)s)",
+    )
+    rotation.add_argument(
+        "--delete",
+        action="store_true",
+        help="delete versions beyond --keep that nothing uses (instance, volume, linked clone)",
+    )
+
+    status_opts = argparse.ArgumentParser(add_help=False)
+    status_opts.add_argument("--json", action="store_true", help="JSON output")
+    status_opts.add_argument(
+        "--check", action="store_true", help="exit 1 when an image is not up to date"
+    )
+
+    sync_opts = argparse.ArgumentParser(add_help=False)
+    sync_opts.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show what would change; only read the platform (signatures are still verified)",
+    )
+    sync_opts.add_argument(
+        "--timeout",
+        type=float,
+        default=3600.0,
+        help="seconds to wait for an import step to finish (default: %(default)s)",
+    )
+    sync_opts.add_argument(
+        "--no-verify-signature",
+        action="store_true",
+        help="import without checking the cosign signature (not recommended)",
+    )
+
     openstack_common = argparse.ArgumentParser(add_help=False)
     openstack_common.add_argument(
         "--cloud",
@@ -80,21 +118,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="cloud name in clouds.yaml (default: $OS_CLOUD, else OS_* variables)",
     )
     openstack_common.add_argument("--region", help="region name, if not set in clouds.yaml")
-    openstack_common.add_argument(
-        "--keep",
-        type=_positive,
-        default=2,
-        help="versions to keep per image, the current one included (default: %(default)s)",
-    )
-    openstack_common.add_argument(
-        "--delete",
-        action="store_true",
-        help="delete versions beyond --keep that no instance or volume uses",
+
+    proxmox_common = argparse.ArgumentParser(add_help=False)
+    proxmox_common.add_argument(
+        "--node", help="Proxmox VE node (default: the node named like this host)"
     )
 
     parser = argparse.ArgumentParser(
         prog="oic-sync",
-        description="Keep openimages.cloud signed cloud images in sync with your cloud.",
+        description="Keep openimages.cloud signed cloud images in sync with your cloud "
+        "(OpenStack Glance or Proxmox VE).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
@@ -115,24 +148,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = os_sub.add_parser(
         "status",
-        parents=[common, openstack_common],
+        parents=[common, openstack_common, rotation, status_opts],
         help="compare the cloud with the index (read only)",
-    )
-    p_status.add_argument("--json", action="store_true", help="JSON output")
-    p_status.add_argument(
-        "--check", action="store_true", help="exit 1 when an image is not up to date"
     )
     p_status.set_defaults(func=cmd_openstack_status)
 
     p_sync = os_sub.add_parser(
         "sync",
-        parents=[common, openstack_common],
+        parents=[common, openstack_common, rotation, sync_opts],
         help="import new versions, rotate names, retire old versions",
-    )
-    p_sync.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="show what would change; only read the cloud (signatures are still verified)",
     )
     p_sync.add_argument(
         "--visibility",
@@ -162,18 +186,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="add the index optional properties (hw_rng_model=virtio: the flavors must "
         "allow hw_rng:allowed)",
     )
-    p_sync.add_argument(
-        "--timeout",
-        type=float,
-        default=3600.0,
-        help="seconds to wait for an import to finish (default: %(default)s)",
-    )
-    p_sync.add_argument(
-        "--no-verify-signature",
-        action="store_true",
-        help="import without checking the cosign signature (not recommended)",
-    )
     p_sync.set_defaults(func=cmd_openstack_sync)
+
+    p_pve = sub.add_parser(
+        "proxmox", help="Proxmox VE backend (VM templates; run on a node, as root)"
+    )
+    pve_sub = p_pve.add_subparsers(dest="action", required=True, metavar="ACTION")
+    p_pstatus = pve_sub.add_parser(
+        "status",
+        parents=[common, proxmox_common, rotation, status_opts],
+        help="compare the node templates with the index (read only)",
+    )
+    p_pstatus.set_defaults(func=cmd_proxmox_status)
+
+    p_psync = pve_sub.add_parser(
+        "sync",
+        parents=[common, proxmox_common, rotation, sync_opts],
+        help="import new versions as templates, rotate names, retire old versions",
+    )
+    p_psync.add_argument(
+        "--import-storage",
+        default="local",
+        help="file storage with the 'import' content type, for downloads (default: %(default)s)",
+    )
+    p_psync.add_argument(
+        "--disk-storage",
+        default="local-lvm",
+        help="storage of the template disks, EFI and cloud-init drives (default: %(default)s)",
+    )
+    p_psync.add_argument("--bridge", default="vmbr0", help="bridge of net0 (default: %(default)s)")
+    p_psync.add_argument(
+        "--vmid-base",
+        type=int,
+        metavar="N",
+        help="first VMID to use for templates, e.g. 9000 (default: the next free VMID)",
+    )
+    p_psync.add_argument(
+        "--memory",
+        type=_positive,
+        default=2048,
+        metavar="MIB",
+        help="memory of the templates in MiB (default: %(default)s)",
+    )
+    p_psync.add_argument(
+        "--cores",
+        type=_positive,
+        default=2,
+        help="CPU cores of the templates (default: %(default)s)",
+    )
+    p_psync.set_defaults(func=cmd_proxmox_sync)
     return parser
 
 
@@ -244,16 +305,16 @@ def _backend_factory(args: argparse.Namespace, client: Any, **options: Any) -> A
     return connect(args.cloud, args.region, client, **options)
 
 
-def cmd_openstack_status(
-    args: argparse.Namespace,
-    client: Any,
-    out: Callable[[str], None],
-    backend: Any = None,
-) -> int:
+def _proxmox_factory(args: argparse.Namespace, **options: Any) -> Any:
+    from oic_sync.backends.proxmox import connect
+
+    return connect(args.node, **options)
+
+
+def _status(args: argparse.Namespace, client: Any, out: Callable[[str], None], backend: Any) -> int:
     from oic_sync.engine import UP_TO_DATE, Engine
 
     _, targets = _load(args, client)
-    backend = backend or _backend_factory(args, client)
     engine = Engine(backend, verifier=None, keep=args.keep, delete=args.delete, out=out)
     plans = engine.status(targets)
     rows = []
@@ -263,7 +324,7 @@ def cmd_openstack_status(
             {
                 "id": p.target.image.id,
                 "variant": p.target.artifact.variant,
-                "name": p.target.stable_name,
+                "name": p.stable_name,
                 "index_version": p.target.artifact.version,
                 "cloud_version": cloud.version if cloud else None,
                 "cloud_image_id": cloud.id if cloud else None,
@@ -290,25 +351,17 @@ def cmd_openstack_status(
     return EXIT_OK
 
 
-def cmd_openstack_sync(
+def _sync(
     args: argparse.Namespace,
     client: Any,
     out: Callable[[str], None],
-    backend: Any = None,
-    verifier: SignatureVerifier | None = None,
+    index: CatalogIndex,
+    targets: list[Target],
+    backend: Any,
+    verifier: SignatureVerifier | None,
 ) -> int:
     from oic_sync.engine import Engine
 
-    index, targets = _load(args, client)
-    backend = backend or _backend_factory(
-        args,
-        client,
-        visibility=args.visibility,
-        import_method=args.import_method,
-        extra_properties=dict(args.property),
-        optional_properties=args.with_optional_properties,
-        import_timeout=args.timeout,
-    )
     if args.no_verify_signature:
         verifier = None
     else:
@@ -331,6 +384,65 @@ def cmd_openstack_sync(
     return EXIT_FAILED if failed else EXIT_OK
 
 
+def cmd_openstack_status(
+    args: argparse.Namespace,
+    client: Any,
+    out: Callable[[str], None],
+    backend: Any = None,
+) -> int:
+    return _status(args, client, out, backend or _backend_factory(args, client))
+
+
+def cmd_openstack_sync(
+    args: argparse.Namespace,
+    client: Any,
+    out: Callable[[str], None],
+    backend: Any = None,
+    verifier: SignatureVerifier | None = None,
+) -> int:
+    index, targets = _load(args, client)
+    backend = backend or _backend_factory(
+        args,
+        client,
+        visibility=args.visibility,
+        import_method=args.import_method,
+        extra_properties=dict(args.property),
+        optional_properties=args.with_optional_properties,
+        import_timeout=args.timeout,
+    )
+    return _sync(args, client, out, index, targets, backend, verifier)
+
+
+def cmd_proxmox_status(
+    args: argparse.Namespace,
+    client: Any,
+    out: Callable[[str], None],
+    backend: Any = None,
+) -> int:
+    return _status(args, client, out, backend or _proxmox_factory(args))
+
+
+def cmd_proxmox_sync(
+    args: argparse.Namespace,
+    client: Any,
+    out: Callable[[str], None],
+    backend: Any = None,
+    verifier: SignatureVerifier | None = None,
+) -> int:
+    index, targets = _load(args, client)
+    backend = backend or _proxmox_factory(
+        args,
+        import_storage=args.import_storage,
+        disk_storage=args.disk_storage,
+        bridge=args.bridge,
+        vmid_base=args.vmid_base,
+        memory=args.memory,
+        cores=args.cores,
+        task_timeout=args.timeout,
+    )
+    return _sync(args, client, out, index, targets, backend, verifier)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -350,6 +462,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with make_client() as client:
             return args.func(args, client, out)
+    except BackendError as e:  # e.g. missing openstacksdk, pvesh not found, unknown node
+        print(f"oic-sync: error: {e}", file=sys.stderr)
+        return EXIT_FAILED
     except (IndexFormatError, ValueError) as e:
         print(f"oic-sync: error: {e}", file=sys.stderr)
         return EXIT_USAGE

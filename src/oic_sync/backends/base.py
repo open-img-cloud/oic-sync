@@ -1,9 +1,10 @@
 """Platform-neutral view of the images oic-sync manages, and the backend interface.
 
-A backend (OpenStack now, Proxmox later) only has to list the images it holds for a target,
+A backend (OpenStack, Proxmox VE) only has to list the images it holds for a target,
 import a new one, rename/hide one, tell whether one is in use and delete one. All decisions
 (what to import, which version holds the stable name, what to retire or delete) are taken by
-oic_sync.engine, identically for every platform.
+oic_sync.engine, identically for every platform. A backend whose platform restricts names
+(Proxmox VE VM names are DNS names) exposes a `naming` attribute (oic_sync.engine.Naming).
 """
 
 from __future__ import annotations

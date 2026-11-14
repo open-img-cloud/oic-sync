@@ -21,21 +21,24 @@
 </p>
 
 Keep the signed cloud images of [openimages.cloud](https://openimages.cloud) in sync with your
-OpenStack Glance.
+OpenStack Glance or your Proxmox VE node.
 
 `oic-sync` reads the catalog index (`https://images.openimages.cloud/index.json`), verifies the
 cosign signature of each image, imports the versions your cloud does not have yet, gives the
-newest one a stable name ("Debian 13") and retires the older ones. It keeps no local state and
+newest one a stable name ("Debian 13" in Glance, `debian-13` on Proxmox VE) and retires the older
+ones. It keeps no local state and
 can run every day from a systemd timer, a Kubernetes CronJob or a CI job: when everything is up
 to date, it changes nothing.
 
-Status: alpha. OpenStack is supported; Proxmox VE is planned.
+Status: alpha. OpenStack is supported; Proxmox VE (VM templates) is new and not yet tested on a
+real node, see [Proxmox VE](#proxmox-ve).
 
 ## Install
 
 ```sh
-pipx install oic-sync
-# or the container image (signed with cosign)
+# OpenStack: the backend needs openstacksdk, an optional extra
+pipx install 'oic-sync[openstack]'
+# or the container image (signed with cosign, OpenStack backend included)
 docker run --rm -v ~/.config/openstack:/etc/openstack:ro \
   ghcr.io/open-img-cloud/oic-sync openstack status --cloud mycloud
 ```
@@ -45,6 +48,8 @@ Python 3.10 or newer. Credentials come from the standard
 (`--cloud`), or from `OS_*` environment variables when no cloud is named. An application
 credential restricted to the image service (plus read access to servers and volumes for
 `--delete`) is enough.
+
+Proxmox VE: `pipx install oic-sync` on the node itself, see [Proxmox VE](#proxmox-ve).
 
 ## Usage
 
@@ -78,6 +83,7 @@ oic-sync openstack sync --cloud admin --visibility public --keep 3 --delete
 | `--no-verify-signature` | skip the cosign check (not recommended) |
 | `--index-url URL` | another index (`$OIC_INDEX_URL`), e.g. a mirror |
 | `--cloud`, `--region` | clouds.yaml entry and region (`$OS_CLOUD`) |
+| `--timeout` | seconds to wait for an import to finish (default 3600) |
 
 `openstack status --check` exits with 1 when an image is not up to date, for monitoring.
 Exit codes: 0 success, 1 at least one image failed, 2 invalid arguments or index.
@@ -140,6 +146,122 @@ compared with the sha512 of the index: that value comes from the build MANIFEST,
 HTTPS with the rest of the index, but is not itself covered by the signature. Use
 `--import-method upload` if you want the signed digest checked on every byte.
 
+## Proxmox VE
+
+`oic-sync proxmox` keeps one VM template per image version on a Proxmox VE node, ready for
+`qm clone`. It runs on the node, as root (like `pveam`), and talks to the local API through
+`pvesh`: no API token, nothing to configure.
+
+```sh
+# On the node (Proxmox VE 9; 8.x with the "import" content type should work)
+apt install pipx
+pipx install oic-sync          # no openstacksdk needed
+# Downloads go to the "import" content of a file storage: enable it once
+# (list the content types the storage already has, plus import)
+pvesm set local --content iso,vztmpl,backup,import
+
+oic-sync proxmox status
+oic-sync proxmox sync --image debian-13 --image ubuntu-24.04 --dry-run
+oic-sync proxmox sync --image debian-13 --image ubuntu-24.04 --vmid-base 9000
+# Remove versions beyond --keep that no linked clone uses
+oic-sync proxmox sync --image debian-13 --keep 2 --delete
+
+# Use a template
+qm clone 9000 120 --name web1 --full 0
+qm set 120 --sshkeys ~/.ssh/id_ed25519.pub
+qm resize 120 scsi0 +20G && qm start 120
+```
+
+`--image`, `--variant`, `--keep`, `--delete`, `--dry-run`, `--timeout`, `--index-url` and
+`--no-verify-signature` work as for OpenStack, and `status --check`/`--json` too. Proxmox
+options:
+
+| Option | Meaning |
+|---|---|
+| `--node NAME` | node to work on (default: the node named like this host) |
+| `--import-storage` | file storage with the `import` content type, for downloads (default `local`) |
+| `--disk-storage` | storage of the template disks, EFI vars and cloud-init drive (default `local-lvm`) |
+| `--bridge` | bridge of `net0` (default `vmbr0`) |
+| `--vmid-base N` | first VMID for templates, e.g. 9000 (default: the next free VMID of the cluster) |
+| `--memory MIB`, `--cores N` | template hardware (default 2048 MiB, 2 cores) |
+
+### What a template looks like
+
+The settings are those of the `qm` commands on each image page of the website:
+
+- `virtio-scsi-single` controller, `scsi0` imported from the qcow2 (`discard=on`), boot from
+  `scsi0`, `virtio` network on the bridge, serial console (`serial0: socket`, `vga: serial0`);
+- cloud-init drive on `ide2`, `ciuser` set to the image login user, `ipconfig0: ip=dhcp`;
+- QEMU guest agent enabled, except for images that do not ship it
+  (`hw_qemu_guest_agent=no` in the index, e.g. CirrOS);
+- UEFI images: `bios: ovmf`, `machine: q35` and an `efidisk0` (4m, no pre-enrolled keys);
+- tags `oic` and `oic-<image id>`, and a description with a machine-readable block that
+  oic-sync reads back:
+
+  ````
+  ```oic-sync
+  oic_id=debian-13
+  version=13-20261111-2659
+  sha256=...
+  imported_at=2026-11-13T09:00:00Z
+  import_file=local:import/oic-9000-debian-13-13-20261111-2659-x86_64.qcow2
+  source=https://images.openimages.cloud/...
+  ```
+  ````
+
+Only VMs with these tags and this block are touched. Add your own tags freely: they are kept.
+
+### Import, naming and rotation
+
+1. **Verify.** The cosign bundle is verified against the index sha256, as for OpenStack.
+2. **Create** the VM shell (not a template yet) with a free VMID.
+3. **Download** the qcow2 with `pvesh create /nodes/<node>/storage/<storage>/download-url
+   --content import --checksum <sha256> --checksum-algorithm sha256`: Proxmox checks the
+   signed digest itself.
+4. **Import** the disk (`scsi0: <storage>:0,import-from=<file>`) and add the cloud-init drive.
+5. **Convert** to a template, then delete the downloaded file.
+
+On any failure, the VM and the downloaded file are removed. VM names must be DNS names: the
+current version is named after the image id (`debian-13`, `alpine-linux-uefi` for a
+variant), older versions `<image id>-<version>` (`debian-13-13-20261026-2643`). Proxmox has no
+hidden flag: retired versions get the tag `oic-retired`. The name `debian-13` moves to the
+newest template at each sync, so automation should look templates up by tag and name at clone
+time; VMs already cloned (linked or full) are not affected by a rename.
+
+With `--delete`, a version beyond `--keep` is destroyed only when no VM of the cluster is a
+linked clone of it (a disk referencing its `base-<vmid>-disk-N` volume). An import that never
+became a template (crashed run) is removed after 6 hours, with its downloaded file.
+
+### Limitations
+
+- One node per run, through the local API (`pvesh`, as root). Run it on each node that needs
+  templates on local storage, or once for a shared storage. No remote mode, no API token.
+- VMs only (no LXC templates). qcow2 artifacts only.
+- New: the API calls follow the Proxmox VE API documentation but have not been run on a real
+  node yet. Try `--dry-run` and a single `--image` first, and report issues.
+- Two runs at the same time on one node may import the same version twice: run it from one
+  timer only.
+
+Daily timer on the node (as root):
+
+```ini
+# /etc/systemd/system/oic-sync-proxmox.service
+[Service]
+Type=oneshot
+ExecStart=/root/.local/bin/oic-sync proxmox sync --image debian-13 --vmid-base 9000 --keep 2
+```
+
+```ini
+# /etc/systemd/system/oic-sync-proxmox.timer
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
 ## Run it periodically
 
 - systemd: [`examples/systemd/`](examples/systemd/) (service and daily timer)
@@ -156,15 +278,16 @@ ruff check . && ruff format --check .
 pytest
 ```
 
-The tests use fakes for Glance, Nova, Cinder and HTTP: they never talk to a cloud.
+The tests use fakes for Glance, Nova, Cinder, `pvesh` and HTTP: they never talk to a cloud.
 
 Layout:
 
 - `oic_sync/index.py`: index schema `oic-index/v1`, parsing and selection
 - `oic_sync/signature.py`: cosign bundle verification (sigstore-python)
 - `oic_sync/engine.py`: platform-neutral planning and execution (import, promote, retire, delete)
-- `oic_sync/backends/base.py`: the backend interface (Proxmox VE will implement it)
+- `oic_sync/backends/base.py`: the backend interface
 - `oic_sync/backends/openstack.py`: Glance, Nova and Cinder calls
+- `oic_sync/backends/proxmox.py`: Proxmox VE templates through `pvesh`
 - `oic_sync/hashing.py`: streaming hash reader for uploads
 
 ## License
