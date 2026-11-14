@@ -30,8 +30,8 @@ ones. It keeps no local state and
 can run every day from a systemd timer, a Kubernetes CronJob or a CI job: when everything is up
 to date, it changes nothing.
 
-Status: alpha. OpenStack is supported; Proxmox VE (VM templates) is new and not yet tested on a
-real node, see [Proxmox VE](#proxmox-ve).
+Status: alpha. OpenStack and Proxmox VE (VM templates, tested on Proxmox VE 9.2) are supported,
+see [Proxmox VE](#proxmox-ve).
 
 ## Install
 
@@ -201,6 +201,7 @@ The settings are those of the `qm` commands on each image page of the website:
   ````
   ```oic-sync
   oic_id=debian-13
+  vmid=9000
   version=13-20261111-2659
   sha256=...
   imported_at=2026-11-13T09:00:00Z
@@ -210,6 +211,8 @@ The settings are those of the `qm` commands on each image page of the website:
   ````
 
 Only VMs with these tags and this block are touched. Add your own tags freely: they are kept.
+A clone copies the tags and the description, but its block names another VMID (`vmid=`): clones
+are never touched.
 
 ### Import, naming and rotation
 
@@ -237,8 +240,9 @@ became a template (crashed run) is removed after 6 hours, with its downloaded fi
 - One node per run, through the local API (`pvesh`, as root). Run it on each node that needs
   templates on local storage, or once for a shared storage. No remote mode, no API token.
 - VMs only (no LXC templates). qcow2 artifacts only.
-- New: the API calls follow the Proxmox VE API documentation but have not been run on a real
-  node yet. Try `--dry-run` and a single `--image` first, and report issues.
+- Tested on Proxmox VE 9.2 with directory storages (qcow2 disks): BIOS and UEFI templates,
+  linked clones, rotation, interrupted runs. LVM-thin, ZFS and Ceph disk storages should work
+  but have not been tried yet: start with `--dry-run` and a single `--image`, and report issues.
 - Two runs at the same time on one node may import the same version twice: run it from one
   timer only.
 
