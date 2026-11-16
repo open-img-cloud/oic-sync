@@ -94,6 +94,8 @@ EOF
 chmod 0755 "$ROOT/DEBIAN/postinst" "$ROOT/DEBIAN/postrm" "$ROOT/DEBIAN/prerm"
 
 mkdir -p "$OUT"
-DEB="$OUT/oic-sync_${PKGVER}_${ARCH}.deb"
+# GitHub release assets turn "~" into ".": name the file without it (the package version
+# keeps ~debNN so that a later Debian upload sorts higher).
+DEB="$OUT/oic-sync_${OIC_VERSION}-1.deb${DEBVER}_${ARCH}.deb"
 dpkg-deb --root-owner-group -Zxz --build "$ROOT" "$DEB" >/dev/null
 echo "built $DEB ($SUITE, python $PYMM)"
