@@ -1,0 +1,17 @@
+# /etc/default/oic-sync (Debian) or /etc/sysconfig/oic-sync (RPM): options of the oic-sync systemd services.
+#
+# Proxmox VE (oic-sync-proxmox.timer, runs as root on the node). Name the images to keep as
+# templates; an empty value makes the service refuse to run (it would import everything).
+#   systemctl enable --now oic-sync-proxmox.timer
+OIC_SYNC_PROXMOX_ARGS=""
+# Example:
+# OIC_SYNC_PROXMOX_ARGS="--image debian-13 --image ubuntu-24.04 --vmid-base 9000 --keep 2 --delete"
+
+# OpenStack (oic-sync-openstack.timer). Credentials: /etc/openstack/clouds.yaml, readable by
+# the service; OS_CLOUD names the entry.
+#   systemctl enable --now oic-sync-openstack.timer
+OS_CLOUD=""
+OIC_SYNC_OPENSTACK_ARGS=""
+# Example:
+# OS_CLOUD="mycloud"
+# OIC_SYNC_OPENSTACK_ARGS="--image debian-13 --image ubuntu-24.04 --keep 2"

@@ -1,0 +1,27 @@
+[Unit]
+Description=Sync openimages.cloud images into OpenStack Glance
+Documentation=https://openimages.cloud/oic-sync/openstack/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+EnvironmentFile=-/etc/default/oic-sync
+EnvironmentFile=-/etc/sysconfig/oic-sync
+# Sigstore trust root cache.
+CacheDirectory=oic-sync
+Environment=HOME=/var/cache/oic-sync
+ExecStart=/bin/sh -c 'if [ -z "$OIC_SYNC_OPENSTACK_ARGS" ] || [ -z "$OS_CLOUD" ]; then echo "oic-sync: set OS_CLOUD and OIC_SYNC_OPENSTACK_ARGS in /etc/default/oic-sync (Debian) or /etc/sysconfig/oic-sync (RPM)"; exit 1; fi; exec /usr/bin/oic-sync openstack sync $OIC_SYNC_OPENSTACK_ARGS'
+# oic-sync only needs outbound HTTPS.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -470,6 +471,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
     except KeyboardInterrupt:
         return 130
+    except BrokenPipeError:
+        # `oic-sync list | head`: the reader went away. Not an error; silence the final
+        # flush of stdout as well.
+        # No real file descriptor (tests, embedding): nothing to silence.
+        with contextlib.suppress(OSError, ValueError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return EXIT_OK
     except Exception as e:
         log.debug("fatal error", exc_info=True)
         print(f"oic-sync: error: {type(e).__name__}: {e}", file=sys.stderr)

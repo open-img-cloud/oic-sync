@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily sync of openimages.cloud images into OpenStack Glance
+Documentation=https://openimages.cloud/oic-sync/openstack/
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
