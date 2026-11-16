@@ -370,6 +370,13 @@ class FakePve:
     vms: dict[int, dict[str, Any]] = field(default_factory=dict)
     vm_node: dict[int, str] = field(default_factory=dict)
     storage: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    # Storage configuration as GET /nodes/<node>/storage lists it.
+    storage_cfg: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: {
+            "local": {"type": "dir", "content": "iso,vztmpl,backup,import", "active": 1},
+            "local-lvm": {"type": "lvmthin", "content": "images,rootdir", "active": 1},
+        }
+    )
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
     fail: set[str] = field(default_factory=set)
@@ -441,6 +448,8 @@ class FakePve:
         self.calls.append((method, path, dict(params)))
         node = f"/nodes/{self.node}"
 
+        if method == "get" and path == f"{node}/storage":
+            return [{"storage": k, "enabled": 1, **v} for k, v in self.storage_cfg.items()]
         if method == "get" and path == "/nodes":
             return [{"node": n, "status": "online"} for n in self.nodes]
         if method == "get" and path == "/cluster/nextid":

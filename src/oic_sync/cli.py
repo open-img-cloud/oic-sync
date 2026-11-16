@@ -419,7 +419,7 @@ def cmd_proxmox_status(
     out: Callable[[str], None],
     backend: Any = None,
 ) -> int:
-    return _status(args, client, out, backend or _proxmox_factory(args))
+    return _status(args, client, out, backend or _proxmox_factory(args, read_only=True))
 
 
 def cmd_proxmox_sync(

@@ -48,7 +48,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from oic_sync.backends.base import BackendError, ManagedImage
-from oic_sync.index import Target
+from oic_sync.index import Target, stable_name
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def block_owner(meta: Mapping[str, str]) -> str | None:
 
 def render_description(target: Target, meta: Mapping[str, str]) -> str:
     image, artifact = target.image, target.artifact
-    title = image.title + (f" ({artifact.variant})" if artifact.variant else "")
+    title = stable_name(image, artifact)  # "Alpine Linux (UEFI)", as in the catalog
     lines = [
         f"**{title}** {artifact.version}, from [openimages.cloud](https://openimages.cloud).",
         "",
@@ -256,6 +256,7 @@ class ProxmoxBackend:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        read_only: bool = False,
     ) -> None:
         if vmid_base is not None and not 100 <= vmid_base <= 999_999_999:
             raise ValueError("vmid base must be between 100 and 999999999")
@@ -274,12 +275,48 @@ class ProxmoxBackend:
         self.sleep = sleep
         self.clock = clock
         self.now = now
+        # status only reads VM configs: the storage options do not apply to it.
+        self.read_only = read_only
+        self._storages_checked = False
 
     def describe(self) -> str:
+        if self.read_only:
+            return f"proxmox node {self.node}"
         return (
             f"proxmox node {self.node}, disks on {self.disk_storage}, "
             f"downloads on {self.import_storage}"
         )
+
+    def check_storages(self) -> None:
+        """Fail before creating anything when a storage is missing or lacks a content type."""
+        if self._storages_checked:
+            return
+        listed = self.api.call("get", f"/nodes/{self.node}/storage") or []
+        by_name = {str(s.get("storage")): s for s in listed if isinstance(s, dict)}
+        for name, content, option in (
+            (self.import_storage, "import", "--import-storage"),
+            (self.disk_storage, "images", "--disk-storage"),
+        ):
+            st = by_name.get(name)
+            if st is None:
+                known = ", ".join(sorted(by_name)) or "none"
+                raise BackendError(
+                    f"storage {name!r} ({option}) does not exist on node {self.node} "
+                    f"(storages: {known})"
+                )
+            if str(st.get("enabled", 1)) in ("0", "false") or str(st.get("active", 1)) in (
+                "0",
+                "false",
+            ):
+                raise BackendError(f"storage {name!r} ({option}) is disabled or not active")
+            types = [t.strip() for t in str(st.get("content") or "").split(",") if t.strip()]
+            if content not in types:
+                hint = ",".join([*types, content])
+                raise BackendError(
+                    f"storage {name!r} ({option}) is not configured for content type "
+                    f"{content!r}: pvesm set {name} --content {hint}"
+                )
+        self._storages_checked = True
 
     @property
     def _qemu(self) -> str:
@@ -449,6 +486,7 @@ class ProxmoxBackend:
         artifact = target.artifact
         if artifact.format not in IMPORT_FORMATS:
             raise BackendError(f"Proxmox cannot import {artifact.format} images")
+        self.check_storages()
         vmid = self.allocate_vmid()
         filename = self.import_filename(target, vmid)
         volid = f"{self.import_storage}:import/{filename}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -290,6 +291,8 @@ def test_import_uefi_and_options(targets, pve, make_pve_backend):
     backend = make_pve_backend(
         disk_storage="ceph", import_storage="nfs", bridge="vmbr1", memory=4096, cores=4
     )
+    pve.storage_cfg["ceph"] = {"type": "rbd", "content": "images", "active": 1}
+    pve.storage_cfg["nfs"] = {"type": "nfs", "content": "import,iso", "active": 1}
     pve.add_vm(100, name="someone-else")
     uefi = targets["alpine-linux/uefi"]
     img = backend.import_target(uefi, "alpine-linux-uefi-3.24.1")
@@ -362,6 +365,37 @@ def test_failed_creation_never_destroys_a_vm_of_someone_else(targets, pve, backe
         backend.import_target(targets["debian-13"], "debian-13-x")
     assert pve.vms[100]["name"] == "production-db"
     assert not [c for c in pve.calls if c[0] == "delete"]
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda cfg: cfg.pop("local-lvm"), "storage 'local-lvm' (--disk-storage) does not exist"),
+        (
+            lambda cfg: cfg["local"].update(content="iso,vztmpl,backup"),
+            "pvesm set local --content iso,vztmpl,backup,import",
+        ),
+        (lambda cfg: cfg["local-lvm"].update(content="rootdir"), "content type 'images'"),
+        (lambda cfg: cfg["local"].update(active=0), "is disabled or not active"),
+    ],
+)
+def test_storages_are_checked_before_anything_is_created(targets, pve, backend, change, message):
+    change(pve.storage_cfg)
+    with pytest.raises(BackendError, match=re.escape(message)):
+        backend.import_target(targets["debian-13"], "debian-13-x")
+    assert not [c for c in pve.calls if c[0] != "get"]
+    assert pve.vms == {}
+
+
+def test_storages_are_checked_once(targets, pve, backend):
+    backend.import_target(targets["debian-13"], "debian-13-a")
+    backend.import_target(targets["alpine-linux/uefi"], "alpine-linux-uefi-a")
+    assert [c[1] for c in pve.calls].count("/nodes/pve/storage") == 1
+
+
+def test_description_title_matches_the_catalog(targets):
+    text = render_description(targets["alpine-linux/uefi"], {"oic_id": "alpine-linux"})
+    assert text.startswith("**Alpine Linux (UEFI)** ")
 
 
 def test_unsupported_format(targets, backend):
@@ -699,7 +733,7 @@ def test_cli_status_then_sync_then_status(run_pve, capsys, pve):
     code, out = run_pve("proxmox", "status", *base, "--check", "--json", capsys=capsys)
     assert code == 0
     data = json.loads(out)
-    assert data["backend"].startswith("proxmox node pve")
+    assert data["backend"] == "proxmox node pve"  # status takes no storage option
     assert {r["state"] for r in data["images"]} == {"up-to-date"}
     assert {r["name"] for r in data["images"]} == {
         "debian-13",
