@@ -118,7 +118,7 @@ class SignatureVerifier:
             self._verifier = Verifier.production()
         return self._verifier
 
-    def _fetch_bundle(self, url: str) -> bytes:
+    def fetch_bundle(self, url: str) -> bytes:
         try:
             response = self._client.get(url)
             response.raise_for_status()
@@ -132,8 +132,10 @@ class SignatureVerifier:
         """Verify the artifact signature; return the signer identity. Raise SignatureError."""
         if not artifact.bundle_url:
             raise SignatureError("the index lists no cosign bundle for this artifact")
-        raw = self._fetch_bundle(artifact.bundle_url)
+        return self.verify_bundle(artifact, self.fetch_bundle(artifact.bundle_url))
 
+    def verify_bundle(self, artifact: Artifact, raw: bytes) -> str:
+        """Verify an already fetched bundle against the artifact sha256; return the signer."""
         from sigstore.errors import Error as SigstoreError
         from sigstore.hashes import Hashed
         from sigstore.models import Bundle

@@ -31,7 +31,8 @@ can run every day from a systemd timer, a Kubernetes CronJob or a CI job: when e
 to date, it changes nothing.
 
 Status: alpha. OpenStack and Proxmox VE (VM templates, tested on Proxmox VE 9.2) are supported,
-see [Proxmox VE](#proxmox-ve).
+see [Proxmox VE](#proxmox-ve). Internal and air-gapped clouds can use a local copy of the catalog,
+see [Mirror](#mirror).
 
 ## Install
 
@@ -78,6 +79,8 @@ system Python.
 oic-sync list
 # Verify the cosign signatures of the index (no cloud needed)
 oic-sync verify --image debian-13
+# Copy the catalog to your own storage, for an internal or air-gapped cloud (see Mirror)
+oic-sync mirror --dest /srv/oic-mirror --base-url https://mirror.example.net/oic
 
 # Compare a cloud with the index (read only)
 oic-sync openstack status --cloud mycloud
@@ -101,7 +104,7 @@ oic-sync openstack sync --cloud admin --visibility public --keep 3 --delete
 | `--property K=V` | extra or overriding Glance property (the `oic_*` keys are reserved) |
 | `--with-optional-properties` | add `hw_rng_model=virtio` (flavors must allow `hw_rng:allowed`) |
 | `--no-verify-signature` | skip the cosign check (not recommended) |
-| `--index-url URL` | another index (`$OIC_INDEX_URL`), e.g. a mirror |
+| `--index-url URL` | another index (`$OIC_INDEX_URL`), e.g. a [mirror](#mirror) |
 | `--cloud`, `--region` | clouds.yaml entry and region (`$OS_CLOUD`) |
 | `--timeout` | seconds to wait for an import to finish (default 3600) |
 
@@ -294,6 +297,140 @@ Persistent=true
 WantedBy=timers.target
 ```
 
+## Mirror
+
+`oic-sync mirror` copies the signed catalog to a directory of your own, for clouds that should
+not (or cannot) download from `images.openimages.cloud`. Serve the directory over HTTP and
+point oic-sync, Glance, Proxmox VE and people at it instead of the CDN.
+
+```sh
+# The latest version of two images (--keep 1 is the default)
+oic-sync mirror --dest /srv/oic-mirror --base-url https://mirror.example.net/oic \
+  --image debian-13 --image ubuntu-24.04
+# Every image except the service ones, two versions each, delete what falls out of --keep
+oic-sync mirror --dest /srv/oic-mirror --base-url https://mirror.example.net/oic \
+  --keep 2 --prune
+# What would be downloaded or pruned (signatures are verified, nothing is written)
+oic-sync mirror --dest /srv/oic-mirror --base-url https://mirror.example.net/oic --dry-run
+
+# Then, anywhere that reaches the mirror
+export OIC_INDEX_URL=https://mirror.example.net/oic/index.json
+oic-sync verify --image debian-13
+oic-sync openstack sync --cloud mycloud --image debian-13
+```
+
+| Option | Meaning |
+|---|---|
+| `--dest DIR` | mirror directory (created if needed) |
+| `--base-url URL` | URL the directory will be served at; written into the mirror `index.json` |
+| `--keep N` | versions per image, the latest included (default 1); older ones come from `versions.json` |
+| `--prune` | delete mirrored versions beyond `--keep`, only when the kept ones are complete |
+| `--dry-run` | verify signatures and local files, show what would change, write nothing |
+| `--image`, `--variant`, `--include-service-images`, `--index-url` | as for the other commands |
+
+The directory has the layout of the CDN, so `<base-url>` is a drop-in replacement for
+`https://images.openimages.cloud`:
+
+```
+/srv/oic-mirror/
+  index.json                      the index, URLs rewritten to --base-url, mirrored images only
+  debian-13/
+    latest.json                   {"version": "13-20261111-2659"}
+    versions.json                 the mirrored versions only
+    13-20261111-2659/
+      debian-13-20261111-2659-x86_64.qcow2
+      debian-13-20261111-2659-x86_64.qcow2.bundle     cosign bundle, copied untouched
+      debian-13-20261111-2659-x86_64.qcow2.sha256     (.sha512, .sha1, .md5 when published)
+      MANIFEST.json  SHA256SUMS  index.html
+```
+
+How the copy is kept safe:
+
+- the cosign bundle of each qcow2 is verified against the index sha256, with the signer
+  identity of the index, before anything is downloaded;
+- each qcow2 is streamed to a hidden `.<file>.part` file, its size, sha256 and sha512 are
+  checked against the index (`versions.json` for older versions), and only then is it renamed
+  into place; a mismatch deletes the temporary file and fails the image;
+- a file already present with the right digests is not downloaded again (its signature is
+  verified again), a corrupt one is replaced, and an interrupted download resumes from its
+  `.part` file (HTTP range request);
+- `index.json`, `versions.json` and `latest.json` are written last, atomically: an image whose
+  new version fails keeps its previous entry, and a broken run never publishes a version that
+  is not complete;
+- bundles and checksums are copied byte for byte: they cover the digests, not the URLs, so
+  `oic-sync verify` and `cosign verify-blob` work on the mirror as on the CDN;
+- a lock file (`.oic-sync-mirror.lock`) stops two runs on the same directory.
+
+Run it again at any time: it only downloads what changed. Exit codes: 0 every image mirrored,
+1 at least one image failed (the others are still updated), 2 invalid arguments or index.
+
+Serve the directory with any web server, e.g. nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name mirror.example.net;
+    # ssl_certificate ...;
+    location ~ /\. { deny all; }   # .part files and the lock
+    location /oic/ {
+        alias /srv/oic-mirror/;
+    }
+}
+```
+
+or Caddy:
+
+```
+mirror.example.net {
+    handle_path /oic/* {
+        root * /srv/oic-mirror
+        @hidden path */.*
+        respond @hidden 404
+        file_server
+    }
+}
+```
+
+Daily refresh with a systemd timer (as a user that owns `/srv/oic-mirror`):
+
+```ini
+# /etc/systemd/system/oic-sync-mirror.service
+[Service]
+Type=oneshot
+User=oic-mirror
+ExecStart=/usr/local/bin/oic-sync mirror --dest /srv/oic-mirror \
+  --base-url https://mirror.example.net/oic --keep 2 --prune
+```
+
+```ini
+# /etc/systemd/system/oic-sync-mirror.timer
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+or cron: `17 4 * * * oic-mirror oic-sync mirror --dest /srv/oic-mirror --base-url https://mirror.example.net/oic --keep 2 --prune`.
+
+Notes and limitations:
+
+- The mirror host needs the CDN and the Sigstore trust root (`tuf-repo-cdn.sigstore.dev`).
+  Clients that verify signatures (`verify`, `openstack sync`, `proxmox sync`) need the Sigstore
+  trust root too, or `--no-verify-signature`; they still check the sha256 of every import.
+- Clients verify signatures against the signer built into oic-sync, not against the one the
+  mirror `index.json` announces (see [Trust chain](#trust-chain)): a tampered or intercepted
+  index cannot vouch for foreign images. `http://` base URLs are accepted for internal mirrors;
+  HTTPS is still preferable, as an attacker on the path could serve an older signed version.
+- The images keep their upstream file names and versions; a mirror can itself be mirrored
+  (`--index-url https://mirror.example.net/oic/index.json`).
+- To drop an image from the mirror, delete its directory: the next run removes it from
+  `index.json`. Images not selected by a run are left as they are.
+- Local directories only for now: sync the directory to object storage (`rclone sync`,
+  `aws s3 sync`) if you serve it from a bucket. A native S3 target is future work.
+
 ## Run it periodically
 
 - systemd: [`examples/systemd/`](examples/systemd/) (service and daily timer)
@@ -310,7 +447,8 @@ ruff check . && ruff format --check .
 pytest
 ```
 
-The tests use fakes for Glance, Nova, Cinder, `pvesh` and HTTP: they never talk to a cloud.
+The tests use fakes for Glance, Nova, Cinder, `pvesh`, HTTP and the mirror directory (a
+temporary directory): they never talk to a cloud.
 
 Layout:
 
@@ -321,6 +459,7 @@ Layout:
 - `oic_sync/backends/openstack.py`: Glance, Nova and Cinder calls
 - `oic_sync/backends/proxmox.py`: Proxmox VE templates through `pvesh`
 - `oic_sync/hashing.py`: streaming hash reader for uploads
+- `oic_sync/mirror.py`: `oic-sync mirror`, the catalog copied to a directory
 
 ## License
 
