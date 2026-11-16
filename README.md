@@ -420,8 +420,10 @@ Notes and limitations:
 - The mirror host needs the CDN and the Sigstore trust root (`tuf-repo-cdn.sigstore.dev`).
   Clients that verify signatures (`verify`, `openstack sync`, `proxmox sync`) need the Sigstore
   trust root too, or `--no-verify-signature`; they still check the sha256 of every import.
-- The mirror `index.json` carries the signer identity that clients check: serve it over HTTPS,
-  or from a network you trust. `http://` base URLs are accepted for internal mirrors.
+- Clients verify signatures against the signer built into oic-sync, not against the one the
+  mirror `index.json` announces (see [Trust chain](#trust-chain)): a tampered or intercepted
+  index cannot vouch for foreign images. `http://` base URLs are accepted for internal mirrors;
+  HTTPS is still preferable, as an attacker on the path could serve an older signed version.
 - The images keep their upstream file names and versions; a mirror can itself be mirrored
   (`--index-url https://mirror.example.net/oic/index.json`).
 - To drop an image from the mirror, delete its directory: the next run removes it from
