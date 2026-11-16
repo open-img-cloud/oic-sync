@@ -260,9 +260,10 @@ became a template (crashed run) is removed after 6 hours, with its downloaded fi
 - One node per run, through the local API (`pvesh`, as root). Run it on each node that needs
   templates on local storage, or once for a shared storage. No remote mode, no API token.
 - VMs only (no LXC templates). qcow2 artifacts only.
-- Tested on Proxmox VE 9.2 with directory storages (qcow2 disks): BIOS and UEFI templates,
-  linked clones, rotation, interrupted runs. LVM-thin, ZFS and Ceph disk storages should work
-  but have not been tried yet: start with `--dry-run` and a single `--image`, and report issues.
+- Tested on Proxmox VE 9.2 with LVM-thin (the default `local-lvm`) and directory storages:
+  BIOS and UEFI templates, linked clones, rotation, interrupted runs, the packaged systemd
+  timer. ZFS and Ceph disk storages should work but have not been tried yet: start with
+  `--dry-run` and a single `--image`, and report issues.
 - Two runs at the same time on one node may import the same version twice: run it from one
   timer only.
 
