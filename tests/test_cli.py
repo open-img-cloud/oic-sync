@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from fakes import BASE, PROJECT, FakeVerifier, cdn_transport
 import oic_sync
+from fakes import BASE, PROJECT, FakeVerifier, cdn_transport
 from oic_sync import cli
 from oic_sync.backends.openstack import Glance, OpenStackBackend
 from oic_sync.http import make_client
