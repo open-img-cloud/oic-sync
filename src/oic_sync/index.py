@@ -153,8 +153,9 @@ def _parse_artifact(raw: Any, where: str) -> Artifact:
         raise IndexFormatError(f"{where}: invalid variant")
     url = _str(raw, "url", where)
     assert url is not None
-    if not url.startswith("https://"):
-        raise IndexFormatError(f"{where}: artifact url must be https")
+    # http is accepted for internal mirrors: integrity rests on the signed sha256, not on TLS.
+    if not url.startswith(("https://", "http://")):
+        raise IndexFormatError(f"{where}: artifact url must be http or https")
     return Artifact(
         variant=variant,
         version=_str(raw, "version", where) or "",
@@ -231,8 +232,8 @@ def parse_index(data: Any) -> CatalogIndex:
     )
 
 
-def fetch_index(client: httpx.Client, url: str = DEFAULT_INDEX_URL) -> CatalogIndex:
-    """Download and parse the index."""
+def fetch_index_json(client: httpx.Client, url: str = DEFAULT_INDEX_URL) -> Any:
+    """Download the index and decode it, without validating it."""
     try:
         response = client.get(url)
         response.raise_for_status()
@@ -244,7 +245,12 @@ def fetch_index(client: httpx.Client, url: str = DEFAULT_INDEX_URL) -> CatalogIn
         data = response.json()
     except ValueError as e:
         raise IndexFormatError(f"index {url} is not valid JSON: {e}") from e
-    return parse_index(data)
+    return data
+
+
+def fetch_index(client: httpx.Client, url: str = DEFAULT_INDEX_URL) -> CatalogIndex:
+    """Download and parse the index."""
+    return parse_index(fetch_index_json(client, url))
 
 
 def stable_name(image: Image, artifact: Artifact) -> str:

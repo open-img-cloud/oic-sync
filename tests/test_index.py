@@ -36,7 +36,7 @@ def test_parse_real_shape(index):
         (lambda d: d["signing"].update(certificate_identity_regexp="("), "regexp"),
         (lambda d: d["images"][0]["artifacts"][0].update(sha256="abc"), "sha256"),
         (lambda d: d["images"][0]["artifacts"][0].update(sha512="zz"), "sha512"),
-        (lambda d: d["images"][0]["artifacts"][0].update(url="http://x/y"), "https"),
+        (lambda d: d["images"][0]["artifacts"][0].update(url="ftp://x/y"), "http or https"),
         (lambda d: d["images"][0]["artifacts"][0].update(size=-1), "size"),
         (lambda d: d.update(images={}), "images"),
     ],

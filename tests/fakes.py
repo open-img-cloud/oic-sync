@@ -182,6 +182,18 @@ class FakeVerifier:
             "https://github.com/open-img-cloud/.github/.github/workflows/build.yml@refs/heads/main"
         )
 
+    def verify_bundle(self, artifact: Any, raw: bytes) -> str:
+        """The fake bundles of cdn_files name the digest they sign."""
+        from oic_sync.signature import SignatureError
+
+        try:
+            signed = json.loads(raw)["fake-bundle-for"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise SignatureError(f"invalid bundle: {e}") from e
+        if signed != artifact.sha256:
+            raise SignatureError("Bundle message digest mismatch")
+        return self.verify(artifact)
+
 
 @dataclass
 class FakeResponse:

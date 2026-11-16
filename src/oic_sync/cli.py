@@ -21,8 +21,11 @@ from oic_sync.index import (
     IndexFormatError,
     Target,
     fetch_index,
+    fetch_index_json,
+    parse_index,
     select_targets,
 )
+from oic_sync.mirror import MirrorError
 from oic_sync.signature import SignatureError, SignatureVerifier
 
 EXIT_OK = 0
@@ -143,6 +146,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="verify the cosign signature of every selected artifact (no cloud needed)",
     )
     p_verify.set_defaults(func=cmd_verify)
+
+    p_mirror = sub.add_parser(
+        "mirror",
+        parents=[common],
+        help="copy the signed catalog to a directory, to serve it as an internal mirror",
+        description="Copy the selected images (qcow2, cosign bundles, checksums, manifests) "
+        "to DEST in the CDN layout, with an index.json whose URLs point to BASE_URL. Serve "
+        "DEST at BASE_URL and use --index-url BASE_URL/index.json with the other commands. "
+        "Every file is verified (size, sha256, sha512, cosign signature) before it is moved "
+        "into place; files already present with the right digests are kept.",
+    )
+    p_mirror.add_argument(
+        "--dest", required=True, metavar="DIR", help="mirror directory, e.g. /srv/oic-mirror"
+    )
+    p_mirror.add_argument(
+        "--base-url",
+        required=True,
+        metavar="URL",
+        help="URL DEST will be served at, e.g. https://mirror.example.net/oic",
+    )
+    p_mirror.add_argument(
+        "--keep",
+        type=_positive,
+        default=1,
+        help="versions to mirror per image, the latest included (default: %(default)s)",
+    )
+    p_mirror.add_argument(
+        "--prune",
+        action="store_true",
+        help="delete mirrored versions beyond --keep (only when the kept ones are complete)",
+    )
+    p_mirror.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show what would be downloaded or pruned; write nothing (signatures are verified)",
+    )
+    p_mirror.set_defaults(func=cmd_mirror)
 
     p_os = sub.add_parser("openstack", help="OpenStack Glance backend")
     os_sub = p_os.add_subparsers(dest="action", required=True, metavar="ACTION")
@@ -298,6 +338,45 @@ def cmd_verify(
         out(f"{t.label}: OK {t.artifact.version} signed by {identity}")
     out(f"{len(targets) - failures}/{len(targets)} signatures verified")
     return EXIT_FAILED if failures else EXIT_OK
+
+
+def cmd_mirror(
+    args: argparse.Namespace,
+    client: Any,
+    out: Callable[[str], None],
+    verifier: Any = None,
+) -> int:
+    from pathlib import Path
+
+    from oic_sync.mirror import Mirror
+
+    raw = fetch_index_json(client, args.index_url)
+    index = parse_index(raw)
+    targets = select_targets(
+        index, args.image, args.variant, include_service=args.include_service_images
+    )
+    mirror = Mirror(
+        client,
+        verifier or SignatureVerifier(client, index.signing),
+        Path(args.dest),
+        args.base_url,
+        index_url=args.index_url,
+        keep=args.keep,
+        prune=args.prune,
+        dry_run=args.dry_run,
+        out=out,
+    )
+    out(
+        f"# mirror {args.index_url} -> {args.dest} ({mirror.base_url})"
+        + (" (dry run)" if args.dry_run else "")
+    )
+    results = mirror.run(raw, index, targets)
+    failed = [r for r in results if not r.ok]
+    out(
+        f"{len(results) - len(failed)}/{len(results)} images mirrored"
+        + (f", {len(failed)} failed: {', '.join(r.image_id for r in failed)}" if failed else "")
+    )
+    return EXIT_FAILED if failed else EXIT_OK
 
 
 def _backend_factory(args: argparse.Namespace, client: Any, **options: Any) -> Any:
@@ -463,7 +542,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with make_client() as client:
             return args.func(args, client, out)
-    except BackendError as e:  # e.g. missing openstacksdk, pvesh not found, unknown node
+    except (BackendError, MirrorError) as e:  # e.g. pvesh not found, mirror locked
         print(f"oic-sync: error: {e}", file=sys.stderr)
         return EXIT_FAILED
     except (IndexFormatError, ValueError) as e:
