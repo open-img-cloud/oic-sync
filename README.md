@@ -35,10 +35,18 @@ see [Proxmox VE](#proxmox-ve).
 
 ## Install
 
+No release has been published yet: the PyPI package and the container image
+`ghcr.io/open-img-cloud/oic-sync` come with the first tag. Until then, install from GitHub:
+
 ```sh
 # OpenStack: the backend needs openstacksdk, an optional extra
-pipx install 'oic-sync[openstack]'
-# or the container image (signed with cosign, OpenStack backend included)
+pipx install 'oic-sync[openstack] @ git+https://github.com/open-img-cloud/oic-sync.git'
+```
+
+After the first release: `pipx install 'oic-sync[openstack]'`, or the signed container image
+(OpenStack backend included):
+
+```sh
 docker run --rm -v ~/.config/openstack:/etc/openstack:ro \
   ghcr.io/open-img-cloud/oic-sync openstack status --cloud mycloud
 ```
@@ -49,7 +57,8 @@ Python 3.10 or newer. Credentials come from the standard
 credential restricted to the image service (plus read access to servers and volumes for
 `--delete`) is enough.
 
-Proxmox VE: `pipx install oic-sync` on the node itself, see [Proxmox VE](#proxmox-ve).
+Proxmox VE: `pipx install git+https://github.com/open-img-cloud/oic-sync.git` on the node
+itself (no extra), see [Proxmox VE](#proxmox-ve).
 
 ## Usage
 
@@ -155,7 +164,7 @@ HTTPS with the rest of the index, but is not itself covered by the signature. Us
 ```sh
 # On the node (Proxmox VE 9; 8.x with the "import" content type should work)
 apt install pipx
-pipx install oic-sync          # no openstacksdk needed
+pipx install git+https://github.com/open-img-cloud/oic-sync.git   # no extra needed
 # Downloads go to the "import" content of a file storage: enable it once
 # (list the content types the storage already has, plus import)
 pvesm set local --content iso,vztmpl,backup,import
