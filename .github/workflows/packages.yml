@@ -35,9 +35,11 @@ jobs:
         env:
           V: ${{ steps.v.outputs.version }}
         run: |
+          # The JSON API can show a version before the index pip reads from serves it:
+          # wait until pip itself can download it.
           for i in $(seq 1 60); do
-            if curl -fsS -A openimages-ci "https://pypi.org/pypi/oic-sync/$V/json" >/dev/null; then
-              echo "oic-sync $V is on PyPI"; exit 0
+            if pip download -q --no-deps --no-cache-dir -d /tmp/probe "oic-sync==$V" >/dev/null 2>&1; then
+              echo "oic-sync $V is installable from PyPI"; exit 0
             fi
             sleep 30
           done
