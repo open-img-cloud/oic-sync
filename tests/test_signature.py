@@ -14,7 +14,15 @@ from cryptography.x509.oid import NameOID, ObjectIdentifier
 from fakes import IDENTITY_RE, ISSUER
 from oic_sync.http import make_client
 from oic_sync.index import Artifact, Signing
-from oic_sync.signature import RegexpIdentityPolicy, SignatureError, SignatureVerifier
+from oic_sync.signature import (
+    ENV_IDENTITY,
+    ENV_ISSUER,
+    OFFICIAL_SIGNING,
+    RegexpIdentityPolicy,
+    SignatureError,
+    SignatureVerifier,
+    trusted_signing,
+)
 
 # A real artifact of the catalog, signed by the build workflow (used by the live tests).
 REAL_URL = "https://images.openimages.cloud/fedora-44/44-1.7/fedora-44-1.7-x86_64.qcow2"
@@ -239,8 +247,38 @@ class TestLive:
         with bundle_client(content=raw) as c, pytest.raises(SignatureError, match="mismatch"):
             SignatureVerifier(c, SIGNING).verify(artifact(sha256="0" * 64))
 
-    def test_real_bundle_rejects_other_identity(self):
+    def test_real_bundle_rejects_other_identity(self, monkeypatch):
         raw, digest = live_bundle()
-        signing = Signing(r"^https://github\.com/open-img-cloud/oic-sync/", ISSUER)
+        monkeypatch.setenv(ENV_IDENTITY, r"^https://github\.com/open-img-cloud/oic-sync/")
         with bundle_client(content=raw) as c, pytest.raises(SignatureError):
-            SignatureVerifier(c, signing).verify(artifact(digest))
+            SignatureVerifier(c, SIGNING).verify(artifact(digest))
+
+
+def test_the_index_signer_is_never_trusted(caplog, monkeypatch):
+    """A tampered index announcing its own signer must not change what is verified."""
+    monkeypatch.delenv(ENV_IDENTITY, raising=False)
+    monkeypatch.delenv(ENV_ISSUER, raising=False)
+    forged = Signing(r"^https://github\.com/attacker/", "https://attacker.example")
+    inner = RecordingVerifier()
+    with bundle_client() as c, caplog.at_level("WARNING"):
+        SignatureVerifier(c, forged, inner).verify(artifact())
+    _hashed, _bundle, policy = inner.seen[0]
+    assert policy._identity.pattern == OFFICIAL_SIGNING.identity_regexp
+    assert policy._issuer == OFFICIAL_SIGNING.oidc_issuer
+    assert "attacker" in caplog.text
+
+
+def test_the_official_index_signer_matches_the_built_in_one(caplog, monkeypatch):
+    monkeypatch.delenv(ENV_IDENTITY, raising=False)
+    monkeypatch.delenv(ENV_ISSUER, raising=False)
+    with caplog.at_level("WARNING"):
+        assert trusted_signing(OFFICIAL_SIGNING) == OFFICIAL_SIGNING
+    assert caplog.text == ""
+
+
+def test_the_trusted_signer_can_be_set_for_forks(monkeypatch):
+    monkeypatch.setenv(ENV_IDENTITY, r"^https://github\.com/my-fork/")
+    monkeypatch.setenv(ENV_ISSUER, "https://issuer.example")
+    assert trusted_signing(SIGNING) == Signing(
+        r"^https://github\.com/my-fork/", "https://issuer.example"
+    )
