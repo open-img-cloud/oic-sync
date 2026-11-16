@@ -5,6 +5,7 @@ import json
 import pytest
 
 from fakes import BASE, PROJECT, FakeVerifier, cdn_transport
+import oic_sync
 from oic_sync import cli
 from oic_sync.backends.openstack import Glance, OpenStackBackend
 from oic_sync.http import make_client
@@ -42,7 +43,7 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["--version"])
     assert e.value.code == 0
-    assert "oic-sync 0.1.0" in capsys.readouterr().out
+    assert f"oic-sync {oic_sync.__version__}" in capsys.readouterr().out
 
 
 def test_list(run, capsys):
