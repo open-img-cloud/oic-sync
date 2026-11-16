@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync openimages.cloud images as Proxmox VE VM templates
+Documentation=https://openimages.cloud/oic-sync/proxmox/
+Wants=network-online.target
+After=network-online.target pve-cluster.service
+
+[Service]
+Type=oneshot
+# pvesh needs root on the node.
+EnvironmentFile=-/etc/default/oic-sync
+EnvironmentFile=-/etc/sysconfig/oic-sync
+Environment=HOME=/var/cache/oic-sync
+CacheDirectory=oic-sync
+ExecStart=/bin/sh -c 'if [ -z "$OIC_SYNC_PROXMOX_ARGS" ]; then echo "oic-sync: set OIC_SYNC_PROXMOX_ARGS in /etc/default/oic-sync (Debian) or /etc/sysconfig/oic-sync (RPM)"; exit 1; fi; exec /usr/bin/oic-sync proxmox sync $OIC_SYNC_PROXMOX_ARGS'

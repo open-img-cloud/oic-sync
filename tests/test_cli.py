@@ -143,3 +143,19 @@ def test_no_verify_signature(run, capsys):
     assert code == 0
     assert "NOT verified" in out
     assert run.verifier.calls == []
+
+
+def test_broken_pipe_is_not_an_error(monkeypatch, capsys):
+    from oic_sync import cli as cli_mod
+
+    def boom(*_a, **_k):
+        raise BrokenPipeError
+
+    monkeypatch.setattr(cli_mod, "cmd_list", boom)
+    parser = cli_mod.build_parser()
+    for action in parser._subparsers._group_actions[0].choices.values():
+        if action.prog.endswith(" list"):
+            action.set_defaults(func=boom)
+    monkeypatch.setattr(cli_mod, "build_parser", lambda: parser)
+    assert cli_mod.main(["list"]) == cli_mod.EXIT_OK
+    assert "error" not in capsys.readouterr().err

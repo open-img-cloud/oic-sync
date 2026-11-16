@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily sync of openimages.cloud templates on Proxmox VE
+Documentation=https://openimages.cloud/oic-sync/proxmox/
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

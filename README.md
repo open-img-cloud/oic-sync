@@ -51,6 +51,26 @@ credential restricted to the image service (plus read access to servers and volu
 
 Proxmox VE: `pipx install oic-sync` on the node itself, see [Proxmox VE](#proxmox-ve).
 
+Packages, with systemd services and timers (installed disabled), are attached to each
+[GitHub release](https://github.com/open-img-cloud/oic-sync/releases) and signed with cosign:
+
+| System | Package | Options file |
+|---|---|---|
+| Debian 13, Proxmox VE 9 | `oic-sync_<version>-1~deb13_amd64.deb` | `/etc/default/oic-sync` |
+| Debian 12, Proxmox VE 8 | `oic-sync_<version>-1~deb12_amd64.deb` | `/etc/default/oic-sync` |
+| EL10 (Rocky, AlmaLinux, RHEL 10) | `oic-sync-<version>-1.el10.x86_64.rpm` | `/etc/sysconfig/oic-sync` |
+| EL9 (Rocky, AlmaLinux, RHEL 9; uses python3.12) | `oic-sync-<version>-1.el9.x86_64.rpm` | `/etc/sysconfig/oic-sync` |
+
+```sh
+# Proxmox VE 9 node
+apt install ./oic-sync_0.1.0-1~deb13_amd64.deb
+# set OIC_SYNC_PROXMOX_ARGS in /etc/default/oic-sync, then
+systemctl enable --now oic-sync-proxmox.timer
+```
+
+Each package holds oic-sync and its Python dependencies in `/opt/oic-sync` and only needs the
+system Python.
+
 ## Usage
 
 ```sh

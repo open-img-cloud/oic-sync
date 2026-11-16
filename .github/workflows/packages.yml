@@ -1,0 +1,118 @@
+name: Packages
+
+# .deb (Debian 12 / Proxmox VE 8, Debian 13 / Proxmox VE 9) and .rpm (EL9, EL10) built from
+# the version published on PyPI, install-tested in a clean container, signed with cosign
+# (keyless) and attached to the GitHub release of the tag. Runs after a version tag (it
+# waits for PyPI) or by hand for an existing version.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version already on PyPI, e.g. 0.1.0'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          v="${INPUT:-${GITHUB_REF_NAME#v}}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-z0-9.]*)$ ]] || { echo "::error::bad version $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Wait for the version on PyPI
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -A openimages-ci "https://pypi.org/pypi/oic-sync/$V/json" >/dev/null; then
+              echo "oic-sync $V is on PyPI"; exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::oic-sync $V did not appear on PyPI"; exit 1
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: deb, image: 'debian:bookworm', install: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ./out/*.deb' }
+          - { kind: deb, image: 'debian:trixie', install: 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ./out/*.deb' }
+          - { kind: rpm, image: 'rockylinux/rockylinux:9', install: 'dnf -y -q install ./out/*.rpm' }
+          - { kind: rpm, image: 'rockylinux/rockylinux:10', install: 'dnf -y -q install ./out/*.rpm' }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build
+        env:
+          V: ${{ needs.version.outputs.version }}
+          IMAGE: ${{ matrix.image }}
+          KIND: ${{ matrix.kind }}
+        run: docker run --rm -v "$PWD:/src" -w /src "$IMAGE" "packaging/$KIND/build.sh" "$V" out
+      - name: Install test in a clean container
+        env:
+          V: ${{ needs.version.outputs.version }}
+          IMAGE: ${{ matrix.image }}
+          INSTALL: ${{ matrix.install }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src "$IMAGE" sh -euc "
+            $INSTALL >/dev/null
+            oic-sync --version | grep -qx 'oic-sync $V'
+            oic-sync list | head -n 3
+            oic-sync verify --image cirros
+            test -f /etc/default/oic-sync || test -f /etc/sysconfig/oic-sync
+            ls /lib/systemd/system/oic-sync-proxmox.timer /usr/lib/systemd/system/oic-sync-proxmox.timer 2>/dev/null | grep -q timer
+          "
+      - uses: actions/upload-artifact@v5
+        with:
+          name: pkg-${{ matrix.kind }}-${{ strategy.job-index }}
+          path: out/*
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # GitHub release
+      id-token: write   # cosign keyless
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: pkg-*
+          path: out
+          merge-multiple: true
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+      - name: Checksums and signatures
+        working-directory: out
+        run: |
+          set -euo pipefail
+          sha256sum -- *.deb *.rpm > SHA256SUMS
+          for f in *.deb *.rpm; do
+            cosign sign-blob --yes --bundle "$f.bundle" "$f" >/dev/null
+          done
+          cat SHA256SUMS
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$V"
+          if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --verify-tag --title "oic-sync $V" \
+              --notes "pipx install 'oic-sync[openstack]==$V' · container ghcr.io/open-img-cloud/oic-sync:$V · packages below (Debian 12/13 for Proxmox VE 8/9, EL9/EL10), signed with cosign."
+          fi
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber out/*
