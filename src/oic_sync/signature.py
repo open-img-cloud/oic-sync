@@ -3,18 +3,23 @@
 Every artifact is signed by the open-img-cloud build workflows with cosign keyless (Sigstore).
 The bundle signs the sha256 of the qcow2, so it is verified against the digest published in the
 index, without downloading the image: the platform later checks that what it imports matches
-that digest. The expected identity (a regexp on the workflow URI) and OIDC issuer come from
-the index `signing` block.
+that digest. The expected identity (a regexp on the workflow URI) and OIDC issuer are built
+in (OFFICIAL_SIGNING), or set with OIC_SIGNER_IDENTITY_REGEXP and OIC_SIGNER_OIDC_ISSUER: the
+index `signing` block is only compared with them, never trusted.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 from typing import Any, Protocol
 
 import httpx
 
 from oic_sync.index import Artifact, Signing
+
+log = logging.getLogger(__name__)
 
 MAX_BUNDLE_BYTES = 1024 * 1024
 
@@ -61,6 +66,40 @@ class RegexpIdentityPolicy:
         )
 
 
+# The signer oic-sync trusts, built in rather than read from the index: whoever controls the
+# index (a compromised CDN, a mirror served over plain HTTP) could otherwise announce their
+# own identity and sign their own images. Forks and private builds set the two variables.
+OFFICIAL_SIGNING = Signing(
+    identity_regexp=(
+        r"^https://github.com/open-img-cloud/\.github/\.github/workflows/"
+        r"build-(libguestfs|dib|nix-flake|freebsd)-image\.yml@"
+    ),
+    oidc_issuer="https://token.actions.githubusercontent.com",
+)
+ENV_IDENTITY = "OIC_SIGNER_IDENTITY_REGEXP"
+ENV_ISSUER = "OIC_SIGNER_OIDC_ISSUER"
+
+
+def trusted_signing(published: Signing | None = None) -> Signing:
+    """The signer to verify against: built in, or from the environment; never the index."""
+    trusted = Signing(
+        identity_regexp=os.environ.get(ENV_IDENTITY) or OFFICIAL_SIGNING.identity_regexp,
+        oidc_issuer=os.environ.get(ENV_ISSUER) or OFFICIAL_SIGNING.oidc_issuer,
+    )
+    if published is not None and published != trusted:
+        log.warning(
+            "the index announces the signer %r (%s); verifying against the trusted signer %r (%s)"
+            " instead (set %s and %s to trust another one)",
+            published.identity_regexp,
+            published.oidc_issuer,
+            trusted.identity_regexp,
+            trusted.oidc_issuer,
+            ENV_IDENTITY,
+            ENV_ISSUER,
+        )
+    return trusted
+
+
 class SignatureVerifier:
     """Fetches the bundle of an artifact and verifies it against the index sha256."""
 
@@ -68,7 +107,7 @@ class SignatureVerifier:
         self, client: httpx.Client, signing: Signing, verifier: _Verifier | None = None
     ) -> None:
         self._client = client
-        self._signing = signing
+        self._signing = trusted_signing(signing)
         self._verifier = verifier
 
     def _get_verifier(self) -> _Verifier:
