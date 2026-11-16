@@ -160,6 +160,13 @@ data "openstack_images_image_v2" "debian" {
 
 ### Trust chain
 
+The signer is built into oic-sync, not read from the index: a signature is accepted only from
+the openimages.cloud build workflows (`^https://github.com/open-img-cloud/\.github/\.github/workflows/build-(libguestfs|dib|nix-flake|freebsd)-image\.yml@`,
+issuer `https://token.actions.githubusercontent.com`). The `signing` block of the index is only
+compared with it, and a different value is reported as a warning. A tampered index (a compromised
+CDN, a mirror served over plain HTTP) therefore cannot vouch for images signed by someone else.
+Forks and private catalogs set `OIC_SIGNER_IDENTITY_REGEXP` and `OIC_SIGNER_OIDC_ISSUER`.
+
 The cosign signature covers the sha256 of the qcow2. The streaming upload checks that digest
 directly. With `web-download`, Glance only computes one digest (sha512 by default), which is
 compared with the sha512 of the index: that value comes from the build MANIFEST, fetched over
