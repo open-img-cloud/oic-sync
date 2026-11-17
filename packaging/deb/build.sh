@@ -30,8 +30,17 @@ ARCH=$(dpkg --print-architecture)
 # The venv is created at its final path: its scripts carry absolute shebangs.
 rm -rf "$PREFIX"
 python3 -m venv "$PREFIX"
-"$PREFIX/bin/pip" install -q --no-cache-dir --disable-pip-version-check \
-  "oic-sync[openstack]==$OIC_VERSION"
+# PyPI's CDN can serve an index without a just-released version for a few minutes on some
+# nodes: retry instead of failing the release.
+for attempt in $(seq 1 20); do
+  if "$PREFIX/bin/pip" install -q --no-cache-dir --disable-pip-version-check \
+    "oic-sync[openstack]==$OIC_VERSION"; then
+    break
+  fi
+  [ "$attempt" -lt 20 ] || { echo "oic-sync $OIC_VERSION not installable from PyPI" >&2; exit 1; }
+  echo "pip install failed (attempt $attempt), retrying in 30 s" >&2
+  sleep 30
+done
 "$PREFIX/bin/oic-sync" --version | grep -qx "oic-sync $OIC_VERSION"
 # Not needed at run time.
 "$PREFIX/bin/pip" uninstall -q -y pip

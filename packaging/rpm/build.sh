@@ -26,8 +26,17 @@ PYMM=$($PY -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.mi
 
 rm -rf "$PREFIX"
 "$PY" -m venv "$PREFIX"
-"$PREFIX/bin/pip" install -q --no-cache-dir --disable-pip-version-check \
-  "oic-sync[openstack]==$OIC_VERSION"
+# PyPI's CDN can serve an index without a just-released version for a few minutes on some
+# nodes: retry instead of failing the release.
+for attempt in $(seq 1 20); do
+  if "$PREFIX/bin/pip" install -q --no-cache-dir --disable-pip-version-check \
+    "oic-sync[openstack]==$OIC_VERSION"; then
+    break
+  fi
+  [ "$attempt" -lt 20 ] || { echo "oic-sync $OIC_VERSION not installable from PyPI" >&2; exit 1; }
+  echo "pip install failed (attempt $attempt), retrying in 30 s" >&2
+  sleep 30
+done
 "$PREFIX/bin/oic-sync" --version | grep -qx "oic-sync $OIC_VERSION"
 "$PREFIX/bin/pip" uninstall -q -y pip
 find "$PREFIX" -name '__pycache__' -type d -prune -exec rm -rf {} +
