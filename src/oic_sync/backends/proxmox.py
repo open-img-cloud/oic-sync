@@ -139,6 +139,15 @@ def block_owner(meta: Mapping[str, str]) -> str | None:
     return match.group(1) if match else None
 
 
+def pve_ostype(props: dict[str, str]) -> str:
+    """Proxmox ostype from the Glance os_type: l26 for Linux, "other" for the rest.
+
+    The catalog leaves os_type out for the BSDs (it used to say linux for every image), so a
+    missing os_type is not taken for Linux.
+    """
+    return "l26" if props.get("os_type") == "linux" else "other"
+
+
 def render_description(target: Target, meta: Mapping[str, str]) -> str:
     image, artifact = target.image, target.artifact
     title = stable_name(image, artifact)  # "Alpine Linux (UEFI)", as in the catalog
@@ -462,8 +471,7 @@ class ProxmoxBackend:
             "serial0": "socket",
             "vga": "serial0",
         }
-        if props.get("os_type", "linux") == "linux":
-            params["ostype"] = "l26"
+        params["ostype"] = pve_ostype(props)
         if props.get("hw_qemu_guest_agent", "yes").lower() not in ("no", "false", "0"):
             params["agent"] = "enabled=1"
         if artifact.firmware == "uefi":
