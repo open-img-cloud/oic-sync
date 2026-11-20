@@ -756,3 +756,12 @@ def test_openstack_extra_missing(monkeypatch, capsys, files):
     code = cli.main(["openstack", "status", "--index-url", INDEX_URL, "--cloud", "x"])
     assert code == 1
     assert "pip install 'oic-sync[openstack]'" in capsys.readouterr().err
+
+
+def test_pve_ostype():
+    from oic_sync.backends.proxmox import pve_ostype
+
+    assert pve_ostype({"os_type": "linux"}) == "l26"
+    # FreeBSD: the catalog leaves os_type out.
+    assert pve_ostype({"architecture": "x86_64"}) == "other"
+    assert pve_ostype({"os_type": "windows"}) == "other"
