@@ -105,11 +105,14 @@ oic-sync openstack sync --cloud admin --visibility public --keep 3 --delete
 | `--with-optional-properties` | add `hw_rng_model=virtio` (flavors must allow `hw_rng:allowed`) |
 | `--no-verify-signature` | skip the cosign check (not recommended) |
 | `--index-url URL` | another index (`$OIC_INDEX_URL`), e.g. a [mirror](#mirror) |
+| `--eol` | images whose upstream release is past its end of life ([endoflife.date](https://endoflife.date) dates published in the index): `warn` (default) and handle them, `skip` them, or `fail` before doing anything. Within six months of the end of life it only warns |
 | `--cloud`, `--region` | clouds.yaml entry and region (`$OS_CLOUD`) |
 | `--timeout` | seconds to wait for an import to finish (default 3600) |
 
 `openstack status --check` exits with 1 when an image is not up to date, for monitoring.
-Exit codes: 0 success, 1 at least one image failed, 2 invalid arguments or index.
+Exit codes: 0 success, 1 at least one image failed (or `--eol fail` refused an image), 2 invalid
+arguments or index. `list` marks images `[EOL]` or `[EOL soon]`; `list --json` and
+`status --json` carry the `support` dates.
 
 ## How it works
 
@@ -326,7 +329,7 @@ oic-sync openstack sync --cloud mycloud --image debian-13
 | `--keep N` | versions per image, the latest included (default 1); older ones come from `versions.json` |
 | `--prune` | delete mirrored versions beyond `--keep`, only when the kept ones are complete |
 | `--dry-run` | verify signatures and local files, show what would change, write nothing |
-| `--image`, `--variant`, `--include-service-images`, `--index-url` | as for the other commands |
+| `--image`, `--variant`, `--include-service-images`, `--index-url`, `--eol` | as for the other commands |
 
 The directory has the layout of the CDN, so `<base-url>` is a drop-in replacement for
 `https://images.openimages.cloud`:

@@ -71,6 +71,23 @@ class Artifact:
 
 
 @dataclass(frozen=True)
+class Support:
+    """Upstream support of the image's release, from endoflife.date at catalog build time."""
+
+    release: str
+    security_until: str | None
+    is_eol: bool
+    eol_soon: bool
+    source: str | None
+
+    def describe(self) -> str:
+        when = self.security_until or "an unknown date"
+        if self.is_eol:
+            return f"release {self.release} reached its upstream end of life on {when}"
+        return f"release {self.release} reaches its upstream end of life on {when}"
+
+
+@dataclass(frozen=True)
 class Image:
     id: str
     title: str
@@ -81,6 +98,15 @@ class Image:
     latest_version: str
     optional_glance_properties: Mapping[str, str]
     artifacts: tuple[Artifact, ...]
+    support: Support | None = None
+
+    @property
+    def eol(self) -> bool:
+        return bool(self.support and self.support.is_eol)
+
+    @property
+    def eol_soon(self) -> bool:
+        return bool(self.support and self.support.eol_soon and not self.support.is_eol)
 
 
 @dataclass(frozen=True)
@@ -135,6 +161,21 @@ def _props(value: Any, where: str) -> dict[str, str]:
     if not isinstance(value, dict):
         raise IndexFormatError(f"{where}: glance properties must be an object")
     return {str(k): str(v) for k, v in value.items()}
+
+
+def _parse_support(raw: Any) -> Support | None:
+    """Informational: a malformed support block is ignored rather than failing the index."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("release"), str):
+        return None
+    until = raw.get("security_until")
+    source = raw.get("source")
+    return Support(
+        release=raw["release"],
+        security_until=until if isinstance(until, str) else None,
+        is_eol=raw.get("is_eol") is True,
+        eol_soon=raw.get("eol_soon") is True,
+        source=source if isinstance(source, str) else None,
+    )
 
 
 def _parse_artifact(raw: Any, where: str) -> Artifact:
@@ -221,6 +262,7 @@ def parse_index(data: Any) -> CatalogIndex:
                 latest_version=_str(raw, "latest_version", image_id, optional=True) or "",
                 optional_glance_properties=_props(raw.get("optional_glance_properties"), image_id),
                 artifacts=artifacts,
+                support=_parse_support(raw.get("support")),
             )
         )
     return CatalogIndex(

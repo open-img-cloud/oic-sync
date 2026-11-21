@@ -76,6 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also handle the service images when no --image is given",
     )
+    common.add_argument(
+        "--eol",
+        choices=("warn", "skip", "fail"),
+        default="warn",
+        help="images whose upstream release is past its end of life (endoflife.date, as "
+        "published in the index): warn and handle them, skip them, or fail before doing "
+        "anything (default: %(default)s; an end of life within six months always only warns)",
+    )
     common.add_argument("-v", "--verbose", action="count", default=0, help="more logs")
 
     rotation = argparse.ArgumentParser(add_help=False)
@@ -279,12 +287,57 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class EolError(Exception):
+    """--eol fail and a selected image is past its end of life."""
+
+
+def apply_eol_policy(targets: list[Target], policy: str) -> list[Target]:
+    """Warn on stderr about end of life; drop (skip) or refuse (fail) images past it."""
+    seen: set[str] = set()
+    eol: list[str] = []
+    for t in targets:
+        image = t.image
+        if image.id in seen or not (image.eol or image.eol_soon):
+            continue
+        seen.add(image.id)
+        assert image.support is not None
+        if image.eol:
+            eol.append(image.id)
+            action = {"warn": "handled anyway", "skip": "skipped", "fail": "refused"}[policy]
+        else:
+            action = "plan the move to a newer release"
+        print(
+            f"oic-sync: warning: {image.id}: {image.support.describe()} ({action})", file=sys.stderr
+        )
+    if eol and policy == "fail":
+        raise EolError(
+            f"image(s) past their upstream end of life: {', '.join(eol)} "
+            "(--eol warn to handle them anyway, --eol skip to leave them out)"
+        )
+    if policy == "skip":
+        return [t for t in targets if not t.image.eol]
+    return targets
+
+
 def _load(args: argparse.Namespace, client: Any) -> tuple[CatalogIndex, list[Target]]:
     index = fetch_index(client, args.index_url)
     targets = select_targets(
         index, args.image, args.variant, include_service=args.include_service_images
     )
-    return index, targets
+    return index, apply_eol_policy(targets, args.eol)
+
+
+def _support_json(t: Target) -> dict[str, Any] | None:
+    s = t.image.support
+    if s is None:
+        return None
+    return {
+        "release": s.release,
+        "security_until": s.security_until,
+        "is_eol": s.is_eol,
+        "eol_soon": s.eol_soon,
+        "source": s.source,
+    }
 
 
 def cmd_list(args: argparse.Namespace, client: Any, out: Callable[[str], None]) -> int:
@@ -302,6 +355,7 @@ def cmd_list(args: argparse.Namespace, client: Any, out: Callable[[str], None]) 
                         "url": t.artifact.url,
                         "sha256": t.artifact.sha256,
                         "size": t.artifact.size,
+                        "support": _support_json(t),
                     }
                     for t in targets
                 ],
@@ -312,9 +366,10 @@ def cmd_list(args: argparse.Namespace, client: Any, out: Callable[[str], None]) 
     out(f"# {index.schema}, generated {index.generated_at}")
     for t in targets:
         size = f"{t.artifact.size / 2**20:.0f} MiB" if t.artifact.size else "?"
+        mark = "  [EOL]" if t.image.eol else "  [EOL soon]" if t.image.eol_soon else ""
         out(
             f"{t.label:32} {t.artifact.version:24} {t.artifact.firmware:5} {size:>9}  "
-            f"{t.stable_name}"
+            f"{t.stable_name}{mark}"
         )
     return EXIT_OK
 
@@ -352,8 +407,11 @@ def cmd_mirror(
 
     raw = fetch_index_json(client, args.index_url)
     index = parse_index(raw)
-    targets = select_targets(
-        index, args.image, args.variant, include_service=args.include_service_images
+    targets = apply_eol_policy(
+        select_targets(
+            index, args.image, args.variant, include_service=args.include_service_images
+        ),
+        args.eol,
     )
     mirror = Mirror(
         client,
@@ -412,6 +470,7 @@ def _status(args: argparse.Namespace, client: Any, out: Callable[[str], None], b
                 "older_versions": len(p.older) - (1 if cloud and not p.current else 0),
                 "pending": [a.describe() for a in p.actions],
                 "notes": p.notes,
+                "support": _support_json(p.target),
             }
         )
     if args.json:
@@ -542,7 +601,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with make_client() as client:
             return args.func(args, client, out)
-    except (BackendError, MirrorError) as e:  # e.g. pvesh not found, mirror locked
+    except (BackendError, MirrorError, EolError) as e:  # e.g. pvesh not found, mirror locked
         print(f"oic-sync: error: {e}", file=sys.stderr)
         return EXIT_FAILED
     except (IndexFormatError, ValueError) as e:
