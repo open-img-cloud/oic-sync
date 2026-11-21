@@ -485,3 +485,242 @@ def test_now_is_injectable(dest, cdn):
     assert json.loads((dest / "index.json").read_text())["mirror"]["mirrored_at"] == (
         "2026-01-02T03:04:05Z"
     )
+
+
+# -- S3 destination ---------------------------------------------------------------------
+
+
+class FakeS3Error(Exception):
+    """Shaped like botocore's ClientError: the error code is in .response."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.response = {"Error": {"Code": code}}
+
+
+class FakeS3:
+    """In-memory bucket implementing the boto3 calls S3Store makes (boto3 argument names)."""
+
+    def __init__(self, bucket: str = "oic") -> None:
+        self.bucket = bucket
+        self.objects: dict[str, dict] = {}
+        self.now = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
+        self.uploads: list[str] = []
+        self.conditional = True
+
+    def _check(self, bucket: str) -> None:
+        if bucket != self.bucket:
+            raise FakeS3Error("NoSuchBucket")
+
+    def head_bucket(self, Bucket):
+        self._check(Bucket)
+
+    def put_object(self, Bucket, Key, Body, IfNoneMatch=None, **extra):
+        self._check(Bucket)
+        if IfNoneMatch == "*" and not self.conditional:
+            raise FakeS3Error("NotImplemented")
+        if IfNoneMatch == "*" and Key in self.objects:
+            raise FakeS3Error("PreconditionFailed")
+        self.objects[Key] = {"Body": bytes(Body), "LastModified": self.now, **extra}
+
+    def get_object(self, Bucket, Key):
+        self._check(Bucket)
+        if Key not in self.objects:
+            raise FakeS3Error("NoSuchKey")
+        import io
+
+        return {"Body": io.BytesIO(self.objects[Key]["Body"])}
+
+    def head_object(self, Bucket, Key):
+        self._check(Bucket)
+        if Key not in self.objects:
+            raise FakeS3Error("404")
+        o = self.objects[Key]
+        return {
+            "ContentLength": len(o["Body"]),
+            "Metadata": o.get("Metadata", {}),
+            "LastModified": o["LastModified"],
+        }
+
+    def list_objects_v2(self, Bucket, Prefix, MaxKeys=1000):
+        self._check(Bucket)
+        keys = sorted(k for k in self.objects if k.startswith(Prefix))[:MaxKeys]
+        return {"Contents": [{"Key": k} for k in keys]} if keys else {}
+
+    def get_paginator(self, name):
+        assert name == "list_objects_v2"
+        fake = self
+
+        class Paginator:
+            def paginate(self, Bucket, Prefix):
+                yield fake.list_objects_v2(Bucket, Prefix)
+
+        return Paginator()
+
+    def delete_objects(self, Bucket, Delete):
+        self._check(Bucket)
+        for o in Delete["Objects"]:
+            self.objects.pop(o["Key"], None)
+
+    def delete_object(self, Bucket, Key):
+        self._check(Bucket)
+        self.objects.pop(Key, None)
+
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs):
+        self._check(Bucket)
+        self.uploads.append(Key)
+        self.objects[Key] = {
+            "Body": Path(Filename).read_bytes(),
+            "LastModified": self.now,
+            **ExtraArgs,
+        }
+
+
+S3_DEST = "s3://oic/mirror"
+
+
+@pytest.fixture
+def s3(monkeypatch, tmp_path):
+    from oic_sync import stores
+
+    fake = FakeS3()
+    staging = tmp_path / "staging"
+
+    def fake_open(dest, *, endpoint_url=None, staging_dir=None):
+        assert dest == S3_DEST
+        return stores.S3Store(dest, client=fake, staging_dir=staging, now=lambda: fake.now)
+
+    monkeypatch.setattr(stores, "open_store", fake_open)
+    fake.staging = staging
+    return fake
+
+
+def s3_mirror(run, *extra: str) -> tuple[int, str]:
+    return run(
+        "mirror",
+        "--index-url",
+        INDEX_URL,
+        "--dest",
+        S3_DEST,
+        "--base-url",
+        MIRROR,
+        "--image",
+        "debian-13",
+        *extra,
+    )
+
+
+def test_s3_mirror_reproduces_the_cdn_layout(run, s3):
+    code, out = s3_mirror(run, "--keep", "2")
+    assert code == 0, out
+    assert f"-> {S3_DEST} (" in out
+    debian_file = f"debian-13-{NEW}-x86_64.qcow2"
+    key = f"mirror/debian-13/{NEW}/{debian_file}"
+    assert {
+        "mirror/index.json",
+        "mirror/debian-13/latest.json",
+        "mirror/debian-13/versions.json",
+        key,
+        f"{key}.bundle",
+        f"mirror/debian-13/{NEW}/MANIFEST.json",
+        f"mirror/debian-13/{OLD}/debian-13-{OLD}-x86_64.qcow2",
+    } <= set(s3.objects)
+    assert ".oic-sync-mirror.lock" not in " ".join(s3.objects)  # released
+    qcow2 = s3.objects[key]
+    assert qcow2["Body"] == DEBIAN_DATA
+    assert qcow2["Metadata"]["sha256"] == sha256(DEBIAN_DATA)
+    assert qcow2["CacheControl"] == "public, max-age=31536000, immutable"
+    assert qcow2["ContentType"] == "application/octet-stream"
+    index = s3.objects["mirror/index.json"]
+    assert index["CacheControl"] == "public, max-age=300"
+    assert index["ContentType"] == "application/json"
+    doc = json.loads(index["Body"])
+    assert doc["images"][0]["artifacts"][0]["url"] == f"{MIRROR}/debian-13/{NEW}/{debian_file}"
+    parse_index(doc)
+    assert not [p for p in s3.staging.rglob("*") if p.is_file()]  # staging emptied
+
+
+def test_s3_second_run_uploads_nothing(run, s3):
+    assert s3_mirror(run)[0] == 0
+    s3.uploads.clear()
+    code, out = s3_mirror(run)
+    assert code == 0, out
+    assert "present, digests and signature verified" in out
+    assert not s3.uploads
+    assert not [u for u in run.log if u.endswith(".qcow2")]
+
+
+def test_s3_object_with_wrong_digests_is_replaced(run, s3):
+    assert s3_mirror(run)[0] == 0
+    key = f"mirror/debian-13/{NEW}/debian-13-{NEW}-x86_64.qcow2"
+    s3.objects[key]["Metadata"] = {"sha256": "0" * 64}
+    code, out = s3_mirror(run)
+    assert code == 0, out
+    assert "local copy does not match, downloading" in out
+    assert s3.objects[key]["Metadata"]["sha256"] == sha256(DEBIAN_DATA)
+
+
+def test_s3_prune(run, s3):
+    assert s3_mirror(run, "--keep", "2")[0] == 0
+    code, out = s3_mirror(run, "--prune")
+    assert code == 0, out
+    assert f"pruned {OLD}" in out
+    assert not [k for k in s3.objects if f"/{OLD}/" in k]
+
+
+def test_s3_dry_run_writes_nothing(run, s3):
+    code, out = s3_mirror(run, "--dry-run")
+    assert code == 0, out
+    assert "would download" in out
+    assert not s3.objects
+
+
+def test_s3_lock(run, s3):
+    from datetime import timedelta
+
+    lock = "mirror/.oic-sync-mirror.lock"
+    s3.objects[lock] = {"Body": b"{}", "LastModified": s3.now - timedelta(minutes=5)}
+    code, out = s3_mirror(run)
+    assert code == 1
+    assert not [k for k in s3.objects if k.endswith(".qcow2")]
+
+    s3.objects[lock]["LastModified"] = s3.now - timedelta(hours=13)  # stale: taken over
+    code, out = s3_mirror(run)
+    assert code == 0, out
+    assert lock not in s3.objects
+
+
+def test_s3_missing_bucket(run, s3):
+    from oic_sync import stores
+
+    store = stores.S3Store("s3://other/x", client=s3)
+    with pytest.raises(MirrorError, match="not reachable"):
+        store.check()
+
+
+def test_s3_destination_needs_boto3(monkeypatch):
+    import builtins
+
+    from oic_sync import stores
+
+    real_import = builtins.__import__
+
+    def no_boto3(name, *args, **kwargs):
+        if name == "boto3":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_boto3)
+    with pytest.raises(MirrorError, match=r"oic-sync\[s3\]"):
+        stores.open_store("s3://bucket/prefix")
+    with pytest.raises(MirrorError, match="invalid S3 destination"):
+        stores.S3Store("s3://", client=object())
+
+
+def test_s3_lock_without_conditional_writes(run, s3):
+    s3.conditional = False
+    code, out = s3_mirror(run)
+    assert code == 0, out
+    s3.objects["mirror/.oic-sync-mirror.lock"] = {"Body": b"{}", "LastModified": s3.now}
+    code, out = s3_mirror(run)
+    assert code == 1

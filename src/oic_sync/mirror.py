@@ -1,4 +1,4 @@
-"""Mirror the signed catalog to a local directory.
+"""Mirror the signed catalog to a local directory or an S3 bucket (see stores.py).
 
 The output reproduces the CDN layout, so that serving the directory over HTTP gives a drop-in
 replacement for images.openimages.cloud:
@@ -18,16 +18,12 @@ URLs, so clients verify the mirror exactly as they verify the CDN.
 
 from __future__ import annotations
 
-import contextlib
 import copy
-import fcntl
-import hashlib
 import json
 import logging
 import os
 import re
-import shutil
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +35,9 @@ import httpx
 from oic_sync.hashing import HashMismatch
 from oic_sync.index import Artifact, CatalogIndex, Image, Target
 from oic_sync.signature import MAX_BUNDLE_BYTES, SignatureError
+from oic_sync.stores import LOCK_NAME, Digests, LocalStore, MirrorError, Store, hash_file
+
+__all__ = ["LOCK_NAME", "ImageResult", "Mirror", "MirrorError"]
 
 log = logging.getLogger(__name__)
 
@@ -49,14 +48,9 @@ MAX_VERSIONS_BYTES = 16 * 1024 * 1024
 # Checksum files published next to each qcow2 on the CDN (missing ones are skipped).
 CHECKSUM_SUFFIXES = (".sha256", ".sha512", ".sha1", ".md5")
 VERSION_SIDECARS = ("SHA256SUMS", "index.html")
-LOCK_NAME = ".oic-sync-mirror.lock"
 
 # Image ids, versions and file names become path components: no separators, no dot files.
 _SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
-
-
-class MirrorError(Exception):
-    """The mirror cannot run at all (destination not usable, another run holds the lock)."""
 
 
 class _BundleVerifier(Protocol):
@@ -71,10 +65,6 @@ def _safe(value: str, what: str) -> str:
 
 def _basename(url: str) -> str:
     return urlsplit(url).path.rsplit("/", 1)[-1]
-
-
-def _part(path: Path) -> Path:
-    return path.with_name(f".{path.name}.part")
 
 
 def _dirname(url: str) -> str:
@@ -106,57 +96,16 @@ class ImageResult:
     messages: list[str] = field(default_factory=list)
 
 
-@dataclass
-class _Digests:
-    size: int = 0
-    sha256: Any = field(default_factory=hashlib.sha256)
-    sha512: Any = field(default_factory=hashlib.sha512)
-
-    def update(self, data: bytes) -> None:
-        self.size += len(data)
-        self.sha256.update(data)
-        self.sha512.update(data)
-
-    def check(self, artifact: Artifact) -> None:
-        if artifact.size is not None and self.size != artifact.size:
-            raise HashMismatch(f"size mismatch: got {self.size} bytes, index says {artifact.size}")
-        got = self.sha256.hexdigest()
-        if got != artifact.sha256:
-            raise HashMismatch(f"sha256 mismatch: computed {got}, index says {artifact.sha256}")
-        if artifact.sha512 is not None and self.sha512.hexdigest() != artifact.sha512:
-            raise HashMismatch("sha512 mismatch with the index")
-
-
-def _hash_file(path: Path, digests: _Digests | None = None) -> _Digests:
-    digests = digests or _Digests()
-    with path.open("rb") as f:
-        while block := f.read(CHUNK):
-            digests.update(block)
-    return digests
-
-
-def _write_atomic(path: Path, data: bytes) -> bool:
-    """Write data to path through a temporary file; return False when it was already there."""
-    with contextlib.suppress(OSError):
-        if path.read_bytes() == data:
-            return False
-    tmp = path.with_name(f".{path.name}.tmp")
-    with tmp.open("wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    return True
-
-
 def _json_bytes(data: Any) -> bytes:
     return (json.dumps(data, indent=2) + "\n").encode()
 
 
-def _read_json(path: Path) -> Any:
+def _parse_json(data: bytes | None) -> Any:
+    if data is None:
+        return None
     try:
-        return json.loads(path.read_bytes())
-    except (OSError, ValueError):
+        return json.loads(data)
+    except ValueError:
         return None
 
 
@@ -169,7 +118,7 @@ class Mirror:
         self,
         client: httpx.Client,
         verifier: _BundleVerifier,
-        dest: Path,
+        dest: Path | Store,
         base_url: str,
         *,
         index_url: str,
@@ -185,7 +134,7 @@ class Mirror:
             raise ValueError(f"--base-url must be an http or https URL, got {base_url!r}")
         self.client = client
         self.verifier = verifier
-        self.dest = dest
+        self.store: Store = LocalStore(dest) if isinstance(dest, Path) else dest
         self.base_url = base_url.rstrip("/")
         self.index_url = index_url
         self.source_base = _dirname(index_url)
@@ -200,22 +149,12 @@ class Mirror:
     def run(
         self, raw_index: Mapping[str, Any], index: CatalogIndex, targets: Sequence[Target]
     ) -> list[ImageResult]:
-        if self.dest.exists() and not self.dest.is_dir():
-            raise MirrorError(f"{self.dest} is not a directory")
+        self.store.check()
         if self.dry_run:
             return self._run(raw_index, index, targets)
-        self.dest.mkdir(parents=True, exist_ok=True)
-        with self._lock():
+        self.store.prepare()
+        with self.store.lock():
             return self._run(raw_index, index, targets)
-
-    @contextlib.contextmanager
-    def _lock(self) -> Iterator[None]:
-        with (self.dest / LOCK_NAME).open("a") as f:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as e:
-                raise MirrorError(f"another oic-sync mirror is running on {self.dest}") from e
-            yield
 
     def _run(
         self, raw_index: Mapping[str, Any], index: CatalogIndex, targets: Sequence[Target]
@@ -389,7 +328,7 @@ class Mirror:
         targets: Sequence[Target],
         result: ImageResult,
     ) -> None:
-        image_dir = self.dest / _safe(image.id, "image id")
+        image_dir = _safe(image.id, "image id")
         upstream = self._upstream_versions(image, raw_image)
         if not upstream:
             self._say(result, "note: no versions.json upstream, only the index version")
@@ -403,7 +342,7 @@ class Mirror:
                 result.ok = False
         latest_ok = bool(done) and done[0] is versions[0]
 
-        previous = _read_json(image_dir / "versions.json") or {}
+        previous = _parse_json(self.store.read(f"{image_dir}/versions.json")) or {}
         previous_entries = [
             e for e in previous.get("versions", []) if isinstance(e, dict) and e.get("version")
         ]
@@ -423,7 +362,7 @@ class Mirror:
                 result.entry = {}
             return
         listed = [self._versions_entry(v) for v in done] + [
-            e for e in extra if (image_dir / str(e["version"])).is_dir()
+            e for e in extra if self.store.has_dir(f"{image_dir}/{e['version']}")
         ]
         if listed:
             doc = {
@@ -432,9 +371,11 @@ class Mirror:
                 "generated_at": upstream.get("generated_at") or self._timestamp(),
                 "versions": listed,
             }
-            _write_atomic(image_dir / "versions.json", _json_bytes(doc))
+            self.store.write(f"{image_dir}/versions.json", _json_bytes(doc))
         if latest_ok:
-            _write_atomic(image_dir / "latest.json", _json_bytes({"version": versions[0].version}))
+            self.store.write(
+                f"{image_dir}/latest.json", _json_bytes({"version": versions[0].version})
+            )
             result.entry = self._index_entry(raw_image, image, versions[0])
 
     @staticmethod
@@ -469,7 +410,7 @@ class Mirror:
 
     def _prune(
         self,
-        image_dir: Path,
+        image_dir: str,
         kept: set[str],
         extra: list[dict[str, Any]],
         upstream: Mapping[str, Any],
@@ -482,18 +423,17 @@ class Mirror:
         for name in sorted(known - kept):
             if not _SAFE.match(name) or ".." in name:
                 continue
-            path = image_dir / name
-            if not path.is_dir():
+            if not self.store.has_dir(f"{image_dir}/{name}"):
                 continue
             self._say(result, f"{'would prune' if self.dry_run else 'pruned'} {name}")
             if not self.dry_run:
-                shutil.rmtree(path)
+                self.store.remove_dir(f"{image_dir}/{name}")
         return [] if not self.dry_run else extra
 
     # -- one version --------------------------------------------------------------------
 
-    def _mirror_version(self, image_dir: Path, v: _Version, result: ImageResult) -> bool:
-        vdir = image_dir / v.version
+    def _mirror_version(self, image_dir: str, v: _Version, result: ImageResult) -> bool:
+        vdir = f"{image_dir}/{v.version}"
         try:
             for f in v.files:
                 self._mirror_file(vdir, v, f, result)
@@ -503,50 +443,38 @@ class Mirror:
             return False
         return True
 
-    def _mirror_file(self, vdir: Path, v: _Version, f: _File, result: ImageResult) -> None:
+    def _mirror_file(self, vdir: str, v: _Version, f: _File, result: ImageResult) -> None:
         a = f.artifact
         if not a.bundle_url:
             raise SignatureError(f"{f.filename}: the index lists no cosign bundle")
         bundle = self._fetch(a.bundle_url, MAX_BUNDLE_BYTES)
         assert bundle is not None
         identity = self.verifier.verify_bundle(a, bundle)
-        path = vdir / f.filename
-        exists = path.is_file()
-        if exists and self._present(path, a):
+        key = f"{vdir}/{f.filename}"
+        exists = self.store.has_file(key)
+        if exists and self.store.present(key, a):
             self._say(result, f"{v.version}: {f.filename} present, digests and signature verified")
         elif self.dry_run:
             action = "would replace (local copy does not match)" if exists else "would download"
             self._say(result, f"{v.version}: {action} {f.filename} ({_human(a.size)})")
         else:
-            vdir.mkdir(parents=True, exist_ok=True)
             action = "local copy does not match, downloading" if exists else "downloading"
-            part = _part(path)
+            part = self.store.staging(key)
             resume = f", resuming after {_human(part.stat().st_size)}" if part.is_file() else ""
             self._say(result, f"{v.version}: {action} {f.filename} ({_human(a.size)}{resume})")
-            self._download(a, path)
+            self._download(a, key)
             self._say(result, f"{v.version}: {f.filename} digests verified, signed by {identity}")
         if not self.dry_run:
-            vdir.mkdir(parents=True, exist_ok=True)
-            _write_atomic(vdir / f"{f.filename}.bundle", bundle)
+            self.store.write(f"{key}.bundle", bundle)
 
-    @staticmethod
-    def _present(path: Path, artifact: Artifact) -> bool:
-        if artifact.size is not None and path.stat().st_size != artifact.size:
-            return False
-        try:
-            _hash_file(path).check(artifact)
-        except HashMismatch:
-            return False
-        return True
-
-    def _download(self, artifact: Artifact, path: Path) -> None:
-        """Stream to a hidden .part file (resuming it when possible), verify, then rename."""
-        part = _part(path)
+    def _download(self, artifact: Artifact, key: str) -> None:
+        """Stream to a staging .part file (resuming it when possible), verify, then commit."""
+        part = self.store.staging(key)
         offset = part.stat().st_size if part.is_file() else 0
         if offset and artifact.size is not None and offset > artifact.size:
             part.unlink()
             offset = 0
-        digests = _hash_file(part) if offset else _Digests()
+        digests = hash_file(part) if offset else Digests()
         if not (offset and offset == artifact.size):
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             with self.client.stream("GET", artifact.url, headers=headers) as response:
@@ -554,7 +482,7 @@ class Mirror:
                     mode = "ab"
                 else:
                     response.raise_for_status()
-                    mode, digests = "wb", _Digests()
+                    mode, digests = "wb", Digests()
                 with part.open(mode) as out:
                     for block in response.iter_bytes(CHUNK):
                         digests.update(block)
@@ -568,9 +496,9 @@ class Mirror:
         except HashMismatch:
             part.unlink(missing_ok=True)
             raise
-        os.replace(part, path)
+        self.store.commit(part, key, artifact)
 
-    def _mirror_sidecars(self, vdir: Path, v: _Version) -> None:
+    def _mirror_sidecars(self, vdir: str, v: _Version) -> None:
         """MANIFEST, SHA256SUMS, index.html and checksum files, when the CDN has them."""
         source = _dirname(v.files[0].artifact.url)
         names = list(dict.fromkeys([*(f.manifest for f in v.files if f.manifest)]))
@@ -581,7 +509,7 @@ class Mirror:
         for name in names:
             data = self._fetch(f"{source}/{name}", MAX_SIDECAR_BYTES, optional=True)
             if data is not None:
-                _write_atomic(vdir / name, data)
+                self.store.write(f"{vdir}/{name}", data)
 
     # -- index --------------------------------------------------------------------------
 
@@ -589,7 +517,7 @@ class Mirror:
         self, raw_index: Mapping[str, Any], index: CatalogIndex, results: list[ImageResult]
     ) -> None:
         """Rewrite index.json; an image whose new version failed keeps its previous entry."""
-        previous = _read_json(self.dest / "index.json") or {}
+        previous = _parse_json(self.store.read("index.json")) or {}
         previous_entries = {
             str(i.get("id")): i for i in previous.get("images", []) if isinstance(i, dict)
         }
@@ -597,11 +525,11 @@ class Mirror:
         images = []
         for image in index.images:
             entry = new_entries.get(image.id) or previous_entries.get(image.id)
-            if entry and (self.dest / image.id).is_dir():
+            if entry and self.store.has_dir(image.id):
                 images.append(entry)
         known = {i.id for i in index.images}
         for image_id, entry in previous_entries.items():  # no longer in the upstream index
-            if image_id not in known and (self.dest / image_id).is_dir():
+            if image_id not in known and self.store.has_dir(image_id):
                 images.append(entry)
         if not images:
             return
@@ -612,4 +540,4 @@ class Mirror:
             "mirrored_at": self._timestamp(),
         }
         data["images"] = images
-        _write_atomic(self.dest / "index.json", _json_bytes(data))
+        self.store.write("index.json", _json_bytes(data))

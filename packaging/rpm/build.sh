@@ -30,7 +30,7 @@ rm -rf "$PREFIX"
 # nodes: retry instead of failing the release.
 for attempt in $(seq 1 20); do
   if "$PREFIX/bin/pip" install -q --no-cache-dir --disable-pip-version-check \
-    "oic-sync[openstack]==$OIC_VERSION"; then
+    "oic-sync[openstack,s3]==$OIC_VERSION"; then
     break
   fi
   [ "$attempt" -lt 20 ] || { echo "oic-sync $OIC_VERSION not installable from PyPI" >&2; exit 1; }

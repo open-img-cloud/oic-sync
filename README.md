@@ -39,6 +39,8 @@ see [Mirror](#mirror).
 ```sh
 # OpenStack: the backend needs openstacksdk, an optional extra
 pipx install 'oic-sync[openstack]'
+# A mirror in an S3 bucket needs boto3, the s3 extra (packages and container include both)
+pipx install 'oic-sync[openstack,s3]'
 # or the container image (signed with cosign, OpenStack backend included)
 docker run --rm -v ~/.config/openstack:/etc/openstack:ro \
   ghcr.io/open-img-cloud/oic-sync openstack status --cloud mycloud
@@ -302,9 +304,9 @@ WantedBy=timers.target
 
 ## Mirror
 
-`oic-sync mirror` copies the signed catalog to a directory of your own, for clouds that should
-not (or cannot) download from `images.openimages.cloud`. Serve the directory over HTTP and
-point oic-sync, Glance, Proxmox VE and people at it instead of the CDN.
+`oic-sync mirror` copies the signed catalog to a directory or an S3 bucket of your own, for
+clouds that should not (or cannot) download from `images.openimages.cloud`. Serve it over HTTP
+and point oic-sync, Glance, Proxmox VE and people at it instead of the CDN.
 
 ```sh
 # The latest version of two images (--keep 1 is the default)
@@ -324,11 +326,13 @@ oic-sync openstack sync --cloud mycloud --image debian-13
 
 | Option | Meaning |
 |---|---|
-| `--dest DIR` | mirror directory (created if needed) |
+| `--dest DEST` | mirror directory (created if needed), or `s3://bucket/prefix` (see [S3 bucket](#s3-bucket)) |
 | `--base-url URL` | URL the directory will be served at; written into the mirror `index.json` |
 | `--keep N` | versions per image, the latest included (default 1); older ones come from `versions.json` |
 | `--prune` | delete mirrored versions beyond `--keep`, only when the kept ones are complete |
 | `--dry-run` | verify signatures and local files, show what would change, write nothing |
+| `--s3-endpoint-url URL` | S3 only: endpoint of a non-AWS object storage (default `$AWS_ENDPOINT_URL`, else AWS) |
+| `--staging-dir DIR` | S3 only: where each qcow2 is downloaded and verified before upload (default under `$TMPDIR`) |
 | `--image`, `--variant`, `--include-service-images`, `--index-url`, `--eol` | as for the other commands |
 
 The directory has the layout of the CDN, so `<base-url>` is a drop-in replacement for
@@ -418,6 +422,37 @@ WantedBy=timers.target
 
 or cron: `17 4 * * * oic-mirror oic-sync mirror --dest /srv/oic-mirror --base-url https://mirror.example.net/oic --keep 2 --prune`.
 
+### S3 bucket
+
+The mirror can live in a bucket instead of a directory: AWS S3 or any S3-compatible object
+storage (Ceph RGW, MinIO, OpenStack Swift with s3api, Infomaniak, OVHcloud...). The layout is
+the same, and the bucket serves it directly: no web server to run.
+
+```sh
+pipx install 'oic-sync[s3]'
+export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=...   # or a profile in ~/.aws
+oic-sync mirror --dest s3://images/oic --s3-endpoint-url https://s3.example.net \
+  --base-url https://s3.example.net/images/oic --keep 2 --prune
+export OIC_INDEX_URL=https://s3.example.net/images/oic/index.json
+```
+
+- Credentials, region and endpoint come from the usual AWS settings (environment variables,
+  `~/.aws/config`, instance role); `--s3-endpoint-url` overrides the endpoint.
+- Each qcow2 is downloaded to `--staging-dir`, checked (size, sha256, sha512, signature) and
+  only then uploaded, so the bucket never holds an unverified image; an interrupted download
+  resumes from the staging directory. Plan free space for the largest image (2 GiB).
+- Objects get the CDN headers: `Cache-Control: public, max-age=31536000, immutable` in
+  version directories, `max-age=300` for `index.json`, `latest.json` and `versions.json`.
+- Each qcow2 carries its sha256 and sha512 as object metadata. Later runs compare them, with
+  the size, instead of downloading the image back: a file replaced by hand without that
+  metadata is uploaded again.
+- The bucket needs public read (or read for your clients) on the prefix; oic-sync does not
+  change bucket policies or ACLs.
+- The lock is an object (`.oic-sync-mirror.lock`) created with a conditional write
+  (`If-None-Match`); a lock older than 12 hours is considered left over and taken over. On a
+  storage without conditional writes the lock is only checked then written, so two runs
+  started at the same second could both proceed: run the mirror from a single host.
+
 Notes and limitations:
 
 - The mirror host needs the CDN and the Sigstore trust root (`tuf-repo-cdn.sigstore.dev`).
@@ -429,10 +464,8 @@ Notes and limitations:
   HTTPS is still preferable, as an attacker on the path could serve an older signed version.
 - The images keep their upstream file names and versions; a mirror can itself be mirrored
   (`--index-url https://mirror.example.net/oic/index.json`).
-- To drop an image from the mirror, delete its directory: the next run removes it from
-  `index.json`. Images not selected by a run are left as they are.
-- Local directories only for now: sync the directory to object storage (`rclone sync`,
-  `aws s3 sync`) if you serve it from a bucket. A native S3 target is future work.
+- To drop an image from the mirror, delete its directory (or its prefix in the bucket): the
+  next run removes it from `index.json`. Images not selected by a run are left as they are.
 
 ## Run it periodically
 
