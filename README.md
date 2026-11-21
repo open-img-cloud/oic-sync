@@ -64,7 +64,7 @@ Packages, with systemd services and timers (installed disabled), are attached to
 
 ```sh
 # Proxmox VE 9 node
-apt install ./oic-sync_0.2.1-1.deb13_amd64.deb
+apt install ./oic-sync_0.2.2-1.deb13_amd64.deb
 # set OIC_SYNC_PROXMOX_ARGS in /etc/default/oic-sync, then
 systemctl enable --now oic-sync-proxmox.timer
 ```
