@@ -160,3 +160,63 @@ def test_broken_pipe_is_not_an_error(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "build_parser", lambda: parser)
     assert cli_mod.main(["list"]) == cli_mod.EXIT_OK
     assert "error" not in capsys.readouterr().err
+
+
+def _with_support(files, **support):
+    """Marks debian-13 with an endoflife.date support block in the fake index."""
+    index = json.loads(files[INDEX_URL])
+    index["images"][0]["support"] = {
+        "product": "debian",
+        "release": "13",
+        "active_until": None,
+        "security_until": "2026-06-30",
+        "extended_until": None,
+        "follows_releases": False,
+        "source": "https://endoflife.date/debian",
+        **support,
+    }
+    files[INDEX_URL] = json.dumps(index).encode()
+
+
+def test_eol_warns_by_default(run, capsys, files):
+    _with_support(files, is_eol=True, eol_soon=False)
+    code, out = run("list", "--index-url", INDEX_URL, capsys=capsys)
+    assert code == 0
+    assert "debian-13" in out
+    assert "[EOL]" in out
+
+
+def test_eol_warning_on_stderr(files, capsys, run):
+    _with_support(files, is_eol=True, eol_soon=False)
+    cli.main(["list", "--index-url", INDEX_URL])
+    err = capsys.readouterr().err
+    assert "debian-13: release 13 reached its upstream end of life on 2026-06-30" in err
+
+
+def test_eol_skip(run, capsys, files):
+    _with_support(files, is_eol=True, eol_soon=False)
+    code, out = run("list", "--index-url", INDEX_URL, "--eol", "skip", "--json", capsys=capsys)
+    assert code == 0
+    assert "debian-13" not in [e["id"] for e in json.loads(out)]
+
+
+def test_eol_fail(run, capsys, files):
+    _with_support(files, is_eol=True, eol_soon=False)
+    code, _ = run("list", "--index-url", INDEX_URL, "--eol", "fail", capsys=capsys)
+    assert code == 1
+
+
+def test_eol_soon_only_warns(run, capsys, files):
+    _with_support(files, is_eol=False, eol_soon=True)
+    code, out = run("list", "--index-url", INDEX_URL, "--eol", "fail", "--json", capsys=capsys)
+    assert code == 0
+    (debian,) = [e for e in json.loads(out) if e["id"] == "debian-13"]
+    assert debian["support"]["eol_soon"] is True
+
+
+def test_malformed_support_is_ignored(run, capsys, files):
+    index = json.loads(files[INDEX_URL])
+    index["images"][0]["support"] = "soon"
+    files[INDEX_URL] = json.dumps(index).encode()
+    code, _ = run("list", "--index-url", INDEX_URL, "--eol", "fail", capsys=capsys)
+    assert code == 0
