@@ -158,15 +158,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_mirror = sub.add_parser(
         "mirror",
         parents=[common],
-        help="copy the signed catalog to a directory, to serve it as an internal mirror",
+        help="copy the signed catalog to a directory or an S3 bucket, as an internal mirror",
         description="Copy the selected images (qcow2, cosign bundles, checksums, manifests) "
         "to DEST in the CDN layout, with an index.json whose URLs point to BASE_URL. Serve "
         "DEST at BASE_URL and use --index-url BASE_URL/index.json with the other commands. "
         "Every file is verified (size, sha256, sha512, cosign signature) before it is moved "
-        "into place; files already present with the right digests are kept.",
+        "into place; files already present with the right digests are kept. DEST can be "
+        "s3://bucket/prefix (needs oic-sync[s3]; credentials and endpoint from the usual AWS "
+        "settings or --s3-endpoint-url).",
     )
     p_mirror.add_argument(
-        "--dest", required=True, metavar="DIR", help="mirror directory, e.g. /srv/oic-mirror"
+        "--dest",
+        required=True,
+        metavar="DEST",
+        help="mirror directory (/srv/oic-mirror) or S3 bucket (s3://bucket/oic)",
+    )
+    p_mirror.add_argument(
+        "--s3-endpoint-url",
+        metavar="URL",
+        help="S3 endpoint of a non-AWS object storage (default: $AWS_ENDPOINT_URL or AWS)",
+    )
+    p_mirror.add_argument(
+        "--staging-dir",
+        metavar="DIR",
+        help="S3 only: local directory qcow2 files are downloaded and verified in before upload "
+        "(default: a directory under $TMPDIR); interrupted downloads resume from it",
     )
     p_mirror.add_argument(
         "--base-url",
@@ -404,6 +420,7 @@ def cmd_mirror(
     from pathlib import Path
 
     from oic_sync.mirror import Mirror
+    from oic_sync.stores import open_store
 
     raw = fetch_index_json(client, args.index_url)
     index = parse_index(raw)
@@ -416,7 +433,11 @@ def cmd_mirror(
     mirror = Mirror(
         client,
         verifier or SignatureVerifier(client, index.signing),
-        Path(args.dest),
+        open_store(
+            args.dest,
+            endpoint_url=args.s3_endpoint_url,
+            staging_dir=Path(args.staging_dir) if args.staging_dir else None,
+        ),
         args.base_url,
         index_url=args.index_url,
         keep=args.keep,
@@ -425,7 +446,7 @@ def cmd_mirror(
         out=out,
     )
     out(
-        f"# mirror {args.index_url} -> {args.dest} ({mirror.base_url})"
+        f"# mirror {args.index_url} -> {mirror.store.describe()} ({mirror.base_url})"
         + (" (dry run)" if args.dry_run else "")
     )
     results = mirror.run(raw, index, targets)

@@ -30,6 +30,34 @@ wheels = [
 ]
 
 [[package]]
+name = "boto3"
+version = "1.44.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore" },
+    { name = "jmespath" },
+    { name = "s3transfer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/43/993eec3594eab145ec751af0ef1dadbad0beb01b304b99d7ed0b68c31a71/boto3-1.44.9.tar.gz", hash = "sha256:da4199076833547445a7181e38e833f476808142df95084b2b46c8b2a107aa66", size = 112771, upload-time = "2026-11-21T01:33:36.737Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/66/73c8c57119a8acf3688dfbe95c4648e8b3e4d6a7a3783b0619b65d201f02/boto3-1.44.9-py3-none-any.whl", hash = "sha256:aff889e8ca6f6006f0b5658b712941471d21e4675d6d48421974a20a5a17a918", size = 140157, upload-time = "2026-11-21T01:33:34.542Z" },
+]
+
+[[package]]
+name = "botocore"
+version = "1.44.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jmespath" },
+    { name = "python-dateutil" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/04/10/cf5cb95dee4b956eb785e5225aa47054872bbcf263241e926fa796c388ce/botocore-1.44.9.tar.gz", hash = "sha256:1f783e0b31f0053f41f4239b7a7e2e73957f25cdc6b2f45d113f1b575a4db10b", size = 17206061, upload-time = "2026-11-21T01:33:31.469Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/ad/f8143d7a78503c3b67d135589cd1da82d3867ed1f37149e64d6f9bef6cfb/botocore-1.44.9-py3-none-any.whl", hash = "sha256:6966752d38514a8e457ea062ea171b2b320c55bad23c8ae4f74f88296e00890d", size = 16905925, upload-time = "2026-11-21T01:33:28.733Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.10.23"
 source = { registry = "https://pypi.org/simple" }
@@ -671,6 +699,9 @@ openstack = [
     { name = "openstacksdk", version = "4.13.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "openstacksdk", version = "4.22.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+s3 = [
+    { name = "boto3" },
+]
 test = [
     { name = "pytest" },
     { name = "ruff" },
@@ -678,13 +709,14 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.36" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "openstacksdk", marker = "extra == 'openstack'", specifier = ">=3.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.6" },
     { name = "sigstore", specifier = ">=4,<5" },
 ]
-provides-extras = ["openstack", "test"]
+provides-extras = ["openstack", "s3", "test"]
 
 [[package]]
 name = "openstacksdk"
@@ -1087,6 +1119,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-dateutil"
+version = "2.9.0.post0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
 name = "pyyaml"
 version = "6.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1236,6 +1280,18 @@ wheels = [
 ]
 
 [[package]]
+name = "s3transfer"
+version = "0.19.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "botocore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/49/c5/0a5ce655109cb96b8dfad36908a4e108d15f5dc2eff8fbc3146c4312e704/s3transfer-0.19.3.tar.gz", hash = "sha256:8326acc3d056d7f7b8a37110c7d2aea41f67e83f6ae79cd3b5fbcca34c726406", size = 166087, upload-time = "2026-10-19T19:19:49.751Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e2/a4/88f9e10498759121060b8050a1554753dfc04df39bbbcc7aad9ecc8d9440/s3transfer-0.19.3-py3-none-any.whl", hash = "sha256:24eb7535804306355e31c952a90022bf5b2f9d760f9a11062c7493a217c08553", size = 90252, upload-time = "2026-10-19T19:19:48.309Z" },
+]
+
+[[package]]
 name = "securesystemslib"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1301,6 +1357,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b4/54/102e772445c5e849b826fbdcd44eb9ad7b3d10fda17b08964658ec7027dc/sigstore_rekor_types-0.0.18.tar.gz", hash = "sha256:19aef25433218ebf9975a1e8b523cc84aaf3cd395ad39a30523b083ea7917ec5", size = 15687, upload-time = "2024-11-22T13:59:54.009Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/45/7c/f0b4e19fd424df4cc964f5d454e1d814fd2dc3b386342e6040441024318f/sigstore_rekor_types-0.0.18-py3-none-any.whl", hash = "sha256:b62bf38c5b1a62bc0d7fe0ee51a0709e49311d137c7880c329882a8f4b2d1d78", size = 20610, upload-time = "2024-11-22T13:59:52.684Z" },
+]
+
+[[package]]
+name = "six"
+version = "1.17.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81", size = 34031, upload-time = "2024-12-04T17:35:28.174Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
 
 [[package]]

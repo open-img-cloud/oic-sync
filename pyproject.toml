@@ -35,6 +35,8 @@ dependencies = [
 [project.optional-dependencies]
 # The OpenStack backend; the Proxmox VE backend only needs pvesh on the node.
 openstack = ["openstacksdk>=3.0"]
+# S3 destination of `oic-sync mirror` (AWS or any S3-compatible object storage).
+s3 = ["boto3>=1.36"]
 test = ["pytest>=8", "ruff>=0.6"]
 
 [project.urls]

@@ -19,7 +19,7 @@ LABEL org.opencontainers.image.title="oic-sync" \
       org.opencontainers.image.source="https://github.com/open-img-cloud/oic-sync" \
       org.opencontainers.image.licenses="Apache-2.0"
 RUN --mount=type=bind,from=build,source=/dist,target=/dist \
-    pip install --no-cache-dir "$(echo /dist/*.whl)[openstack]" \
+    pip install --no-cache-dir "$(echo /dist/*.whl)[openstack,s3]" \
  && useradd --no-log-init --create-home --home-dir /home/oic --uid 10001 oic
 # clouds.yaml is looked up in /etc/openstack (mount it read only) or ~/.config/openstack.
 # The Sigstore trust root is cached under ~/.cache/sigstore (writable home).
