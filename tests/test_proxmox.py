@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import subprocess
@@ -765,3 +766,13 @@ def test_pve_ostype():
     # FreeBSD: the catalog leaves os_type out.
     assert pve_ostype({"architecture": "x86_64"}) == "other"
     assert pve_ostype({"os_type": "windows"}) == "other"
+
+
+def test_memory_at_least_min_ram(targets, pve):
+    """The template never gets less memory than the image needs (index min_ram)."""
+    t = targets["debian-13"]
+    big = dataclasses.replace(t, image=dataclasses.replace(t.image, min_ram=4096))
+    b = proxmox.connect(api=pve, memory=1024)
+    b.import_target(big, "debian-13-13-20261103-2651")
+    (create,) = creates(pve, "/nodes/pve/qemu")
+    assert create["memory"] == 4096

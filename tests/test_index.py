@@ -24,6 +24,7 @@ def test_parse_real_shape(index):
     assert a.variant is None
     assert a.glance_properties["oic_id"] == "debian-13"
     assert a.min_disk_gib == 4  # 3 GiB + 1 byte rounds up
+    assert debian.min_ram == 1024
     assert index.image("octavia-amphora").artifacts[0].sha512 is None
 
 
@@ -103,3 +104,14 @@ def test_fetch_index_errors():
             fetch_index(c, f"{BASE}/index.json")
         with pytest.raises(IndexFormatError, match="not valid JSON"):
             fetch_index(c, f"{BASE}/bad.json")
+
+
+def test_min_ram_optional():
+    """Indexes published before min_ram parse, without it."""
+    data = index_dict()
+    for img in data["images"]:
+        img.pop("min_ram", None)
+    assert all(i.min_ram is None for i in parse_index(data).images)
+    data["images"][0]["min_ram"] = -1
+    with pytest.raises(IndexFormatError, match="min_ram"):
+        parse_index(data)

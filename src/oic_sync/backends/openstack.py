@@ -244,6 +244,8 @@ class OpenStackBackend:
         }
         if target.artifact.min_disk_gib:
             body["min_disk"] = target.artifact.min_disk_gib
+        if target.image.min_ram:
+            body["min_ram"] = target.image.min_ram
         return body
 
     def _available_methods(self) -> list[str]:

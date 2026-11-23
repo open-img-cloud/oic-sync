@@ -98,6 +98,7 @@ def image(image_id: str, title: str, artifacts: list[dict[str, Any]]) -> dict[st
         "tags": [],
         "glance_properties": {},
         "optional_glance_properties": {"hw_rng_model": "virtio"},
+        "min_ram": 1024,
         "artifacts": artifacts,
     }
 
