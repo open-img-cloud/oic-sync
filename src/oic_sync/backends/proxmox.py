@@ -464,7 +464,8 @@ class ProxmoxBackend:
             "name": name,
             "tags": ";".join([MANAGED_TAG, image_tag(target.image.id), RETIRED_TAG]),
             "description": render_description(target, meta),
-            "memory": self.memory,
+            # Never below what the image needs to boot (index min_ram, MiB).
+            "memory": max(self.memory, target.image.min_ram or 0),
             "cores": self.cores,
             "net0": f"virtio,bridge={self.bridge}",
             "scsihw": "virtio-scsi-single",

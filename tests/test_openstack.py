@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 from datetime import datetime, timezone
 
 import pytest
@@ -89,6 +90,7 @@ def test_create_body(make_backend, targets):
     assert body["disk_format"] == "qcow2"
     assert body["container_format"] == "bare"
     assert body["min_disk"] == 4
+    assert body["min_ram"] == 1024
     assert body["oic_variant"] == "uefi"
     assert body["oic_id"] == "alpine-linux"
     assert body["hw_firmware_type"] == "uefi"
@@ -383,3 +385,10 @@ def test_new_version_rotates_names_and_keeps_n(glance, client, targets, files):
     assert by_version["13-v3"]["name"] == "Debian 13 (13-v3)"
     assert by_version["13-v3"]["os_hidden"] is True
     assert by_version["13-v1"]["name"] == "Debian 13 (13-v1)"
+
+
+def test_create_body_without_min_ram(make_backend, targets):
+    """An index without min_ram leaves Glance's default."""
+    t = targets["debian-13"]
+    t = dataclasses.replace(t, image=dataclasses.replace(t.image, min_ram=None))
+    assert "min_ram" not in make_backend().create_body(t, "Debian 13")

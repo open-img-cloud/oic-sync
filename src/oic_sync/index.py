@@ -99,6 +99,8 @@ class Image:
     optional_glance_properties: Mapping[str, str]
     artifacts: tuple[Artifact, ...]
     support: Support | None = None
+    # Glance min_ram in MiB (index field since 2026-11, SCS-0102); None in older indexes.
+    min_ram: int | None = None
 
     @property
     def eol(self) -> bool:
@@ -263,6 +265,7 @@ def parse_index(data: Any) -> CatalogIndex:
                 optional_glance_properties=_props(raw.get("optional_glance_properties"), image_id),
                 artifacts=artifacts,
                 support=_parse_support(raw.get("support")),
+                min_ram=_int(raw, "min_ram"),
             )
         )
     return CatalogIndex(

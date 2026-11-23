@@ -130,7 +130,7 @@ For each selected artifact of the index (an image, in one variant):
    verification means no import.
 3. **Import.** The image is created hidden (`os_hidden=true`) under a versioned name, with all
    the Glance properties of the index (`os_distro`, `hw_disk_bus`, `hw_firmware_type`...),
-   `min_disk` from the virtual size, and the `oic_*` keys. Then:
+   `min_disk` from the virtual size, `min_ram` from the index, and the `oic_*` keys. Then:
    - if Glance offers the `web-download` import method (`/v2/info/import`), Glance downloads
      the image itself; the multihash it computes (`os_hash_algo`/`os_hash_value`, sha512 by
      default) must equal the index sha512;
@@ -218,7 +218,7 @@ options:
 | `--disk-storage` | storage of the template disks, EFI vars and cloud-init drive (default `local-lvm`) |
 | `--bridge` | bridge of `net0` (default `vmbr0`) |
 | `--vmid-base N` | first VMID for templates, e.g. 9000 (default: the next free VMID of the cluster) |
-| `--memory MIB`, `--cores N` | template hardware (default 2048 MiB, 2 cores) |
+| `--memory MIB`, `--cores N` | template hardware (default 2048 MiB, 2 cores); the memory is raised to the image's `min_ram` from the index when that is higher |
 
 ### What a template looks like
 
